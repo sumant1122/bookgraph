@@ -23,6 +23,19 @@ class GraphResponse(BaseModel):
     edges: list[dict] = Field(default_factory=list)
 
 
+class GraphSearchResponse(BaseModel):
+    nodes: list[dict] = Field(default_factory=list)
+
+
+class GraphNodeDetailResponse(BaseModel):
+    id: str
+    label: str
+    type: str
+    properties: dict = Field(default_factory=dict)
+    degree: int = 0
+    neighbors: list[dict] = Field(default_factory=list)
+
+
 class InsightResponse(BaseModel):
     central_books: dict
     clusters: dict
@@ -45,7 +58,8 @@ class DiscoveryItem(BaseModel):
     type: str
     title: str
     description: str
-    nodes: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
+    related_nodes: list[str] = Field(default_factory=list)
     created_at: str
 
 
@@ -57,6 +71,7 @@ class ReadingPathItem(BaseModel):
     concept: str
     books: list[str] = Field(default_factory=list)
     explanation: str = ""
+    created_at: str | None = None
 
 
 class ReadingPathsResponse(BaseModel):
@@ -66,6 +81,8 @@ class ReadingPathsResponse(BaseModel):
 class KnowledgeGapItem(BaseModel):
     gap: str
     reason: str = ""
+    candidate_books: list[str] = Field(default_factory=list)
+    created_at: str | None = None
 
 
 class KnowledgeGapsResponse(BaseModel):

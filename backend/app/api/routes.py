@@ -11,6 +11,8 @@ from app.api.schemas import (
     DiscoveriesResponse,
     DiscoveryItem,
     GraphResponse,
+    GraphNodeDetailResponse,
+    GraphSearchResponse,
     InsightResponse,
     KnowledgeGapsResponse,
     ReadingPathsResponse,
@@ -56,9 +58,42 @@ async def graph_snapshot(repo: GraphRepository = Depends(get_graph_repo)) -> Gra
     return GraphResponse(nodes=data["nodes"], edges=data["edges"])
 
 
+@router.get("/graph/search", response_model=GraphSearchResponse)
+async def graph_search(
+    q: str = Query(default="", min_length=0, max_length=120),
+    node_type: str | None = Query(default=None, alias="type"),
+    limit: int = Query(default=25, ge=1, le=100),
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> GraphSearchResponse:
+    safe_type = node_type.strip().lower() if isinstance(node_type, str) and node_type.strip() else None
+    if safe_type and safe_type not in {"book", "author", "concept", "field"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid node type filter.")
+    nodes = repo.search_graph_nodes(query=q, limit=limit, node_type=safe_type)
+    return GraphSearchResponse(nodes=nodes)
+
+
+@router.get("/graph/focus", response_model=GraphResponse)
+async def graph_focus(
+    node_id: str = Query(min_length=1),
+    depth: int = Query(default=1, ge=1, le=2),
+    limit: int = Query(default=120, ge=10, le=300),
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> GraphResponse:
+    data = repo.get_focus_subgraph(node_id=node_id, depth=depth, limit=limit)
+    return GraphResponse(nodes=data["nodes"], edges=data["edges"])
+
+
+@router.get("/graph/nodes/{node_id}", response_model=GraphNodeDetailResponse)
+async def graph_node_details(node_id: str, repo: GraphRepository = Depends(get_graph_repo)) -> GraphNodeDetailResponse:
+    node = repo.get_node_details(node_id=node_id)
+    if not node:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found.")
+    return GraphNodeDetailResponse(**node)
+
+
 @router.get("/insights", response_model=InsightResponse)
 async def insights(engine: GraphInsightEngine = Depends(get_insight_engine)) -> InsightResponse:
-    bundle = engine.build_insight_bundle()
+    bundle = engine.get_latest_bundle()
     return InsightResponse(**bundle)
 
 
@@ -83,13 +118,21 @@ async def discovery_by_id(
 
 
 @router.get("/reading-paths", response_model=ReadingPathsResponse)
-async def reading_paths() -> ReadingPathsResponse:
-    return ReadingPathsResponse(paths=[])
+async def reading_paths(
+    limit: int = Query(default=30, ge=1, le=100),
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> ReadingPathsResponse:
+    rows = repo.list_reading_paths(limit=limit)
+    return ReadingPathsResponse(paths=rows)
 
 
 @router.get("/knowledge-gaps", response_model=KnowledgeGapsResponse)
-async def knowledge_gaps() -> KnowledgeGapsResponse:
-    return KnowledgeGapsResponse(gaps=[])
+async def knowledge_gaps(
+    limit: int = Query(default=30, ge=1, le=100),
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> KnowledgeGapsResponse:
+    rows = repo.list_knowledge_gaps(limit=limit)
+    return KnowledgeGapsResponse(gaps=rows)
 
 
 @router.post("/chat", response_model=ChatResponse)

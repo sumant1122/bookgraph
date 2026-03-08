@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from neo4j import GraphDatabase
@@ -21,6 +22,11 @@ class GraphRepository:
             "CREATE CONSTRAINT author_name_unique IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
             "CREATE CONSTRAINT concept_name_unique IF NOT EXISTS FOR (c:Concept) REQUIRE c.name IS UNIQUE",
             "CREATE CONSTRAINT field_name_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.name IS UNIQUE",
+            "CREATE CONSTRAINT graph_insight_id_unique IF NOT EXISTS FOR (g:GraphInsight) REQUIRE g.id IS UNIQUE",
+            "CREATE CONSTRAINT insight_bundle_name_unique IF NOT EXISTS FOR (i:InsightBundle) REQUIRE i.name IS UNIQUE",
+            "CREATE CONSTRAINT agent_job_name_unique IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.name IS UNIQUE",
+            "CREATE CONSTRAINT reading_path_signature_unique IF NOT EXISTS FOR (r:ReadingPath) REQUIRE r.signature IS UNIQUE",
+            "CREATE CONSTRAINT knowledge_gap_signature_unique IF NOT EXISTS FOR (k:KnowledgeGap) REQUIRE k.signature IS UNIQUE",
         ]
         with self._driver.session() as session:
             for statement in constraints:
@@ -68,19 +74,38 @@ class GraphRepository:
         with self._driver.session() as session:
             session.run(query, book_title=book_title, concepts=concepts, fields=fields).consume()
 
-    def get_books_for_relationship_scan(self, exclude_title: str, limit: int) -> list[dict[str, Any]]:
+    def get_books_for_relationship_scan(
+        self,
+        exclude_title: str,
+        limit: int,
+        preferred_fields: list[str] | None = None,
+        publish_year: int | None = None,
+    ) -> list[dict[str, Any]]:
+        preferred_fields = [str(field).lower() for field in (preferred_fields or []) if str(field).strip()]
+        safe_publish_year = publish_year if publish_year is not None else 9999
         query = """
         MATCH (b:Book)
         WHERE b.title <> $exclude_title
         OPTIONAL MATCH (b)-[:BELONGS_TO]->(f:Field)
+        WITH b, collect(DISTINCT toLower(f.name)) AS field_names, collect(DISTINCT f.name) AS original_fields
+        WITH b, original_fields,
+             size([field IN field_names WHERE field IN $preferred_fields]) AS overlap_score,
+             abs(coalesce(b.publish_year, $safe_publish_year) - $safe_publish_year) AS year_distance
         RETURN b.title AS title,
                b.description AS description,
                b.publish_year AS publish_year,
-               collect(DISTINCT f.name) AS subjects
+               original_fields AS subjects
+        ORDER BY overlap_score DESC, year_distance ASC, b.title ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
-            results = session.run(query, exclude_title=exclude_title, limit=limit)
+            results = session.run(
+                query,
+                exclude_title=exclude_title,
+                preferred_fields=preferred_fields,
+                safe_publish_year=safe_publish_year,
+                limit=limit,
+            )
             return [record.data() for record in results]
 
     def add_book_relationship(
@@ -120,7 +145,12 @@ class GraphRepository:
     def get_graph(self) -> dict[str, list[dict[str, Any]]]:
         nodes_query = """
         MATCH (n)
-        WHERE NOT n:InsightSnapshot AND NOT n:GraphInsight
+        WHERE NOT n:InsightSnapshot
+          AND NOT n:GraphInsight
+          AND NOT n:InsightBundle
+          AND NOT n:AgentJob
+          AND NOT n:ReadingPath
+          AND NOT n:KnowledgeGap
         RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props
         """
         edges_query = """
@@ -129,6 +159,14 @@ class GraphRepository:
           AND NOT b:InsightSnapshot
           AND NOT a:GraphInsight
           AND NOT b:GraphInsight
+          AND NOT a:InsightBundle
+          AND NOT b:InsightBundle
+          AND NOT a:AgentJob
+          AND NOT b:AgentJob
+          AND NOT a:ReadingPath
+          AND NOT b:ReadingPath
+          AND NOT a:KnowledgeGap
+          AND NOT b:KnowledgeGap
         RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type, properties(r) AS props
         """
         with self._driver.session() as session:
@@ -152,6 +190,168 @@ class GraphRepository:
                 for row in session.run(edges_query).data()
             ]
             return {"nodes": nodes, "edges": edges}
+
+    def search_graph_nodes(
+        self,
+        query: str,
+        limit: int = 25,
+        node_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        safe_query = (query or "").strip()
+        type_map = {
+            "book": "Book",
+            "author": "Author",
+            "concept": "Concept",
+            "field": "Field",
+        }
+        label = type_map.get((node_type or "").strip().lower())
+        cypher = """
+        MATCH (n)
+        WHERE NOT n:InsightSnapshot
+          AND NOT n:GraphInsight
+          AND NOT n:InsightBundle
+          AND NOT n:AgentJob
+          AND NOT n:ReadingPath
+          AND NOT n:KnowledgeGap
+          AND (
+            $query = ''
+            OR toLower(coalesce(n.title, n.name, '')) CONTAINS toLower($query)
+          )
+          AND ($label IS NULL OR $label IN labels(n))
+        WITH n, toLower(coalesce(n.title, n.name, '')) AS search_label
+        RETURN elementId(n) AS id,
+               labels(n) AS labels,
+               properties(n) AS props,
+               search_label = toLower($query) AS exact_match
+        ORDER BY exact_match DESC, coalesce(n.title, n.name, '') ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(
+                cypher,
+                query=safe_query,
+                label=label,
+                limit=max(1, min(100, limit)),
+            ).data()
+            return [
+                {
+                    "id": row["id"],
+                    "label": row["props"].get("title") or row["props"].get("name") or "Unknown",
+                    "type": (row["labels"][0].lower() if row["labels"] else "unknown"),
+                    "properties": self._to_json_safe(row["props"]),
+                }
+                for row in rows
+            ]
+
+    def get_focus_subgraph(
+        self,
+        node_id: str,
+        depth: int = 1,
+        limit: int = 120,
+    ) -> dict[str, list[dict[str, Any]]]:
+        safe_depth = max(1, min(2, depth))
+        safe_limit = max(10, min(300, limit))
+        node_ids_query = f"""
+        MATCH (seed)
+        WHERE elementId(seed) = $node_id
+        MATCH path = (seed)-[:WRITTEN_BY|MENTIONS|BELONGS_TO|RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS*0..{safe_depth}]-(n)
+        WITH collect(DISTINCT elementId(n)) AS node_ids
+        RETURN node_ids[..$limit] AS node_ids
+        """
+        nodes_query = """
+        UNWIND $node_ids AS node_id
+        MATCH (n)
+        WHERE elementId(n) = node_id
+        RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props
+        """
+        edges_query = """
+        UNWIND $node_ids AS node_id
+        MATCH (a)
+        WHERE elementId(a) = node_id
+        MATCH (a)-[r]->(b)
+        WHERE elementId(b) IN $node_ids
+        RETURN DISTINCT elementId(r) AS id,
+                        elementId(a) AS source,
+                        elementId(b) AS target,
+                        type(r) AS type,
+                        properties(r) AS props
+        LIMIT $edge_limit
+        """
+        with self._driver.session() as session:
+            row = session.run(node_ids_query, node_id=node_id, limit=safe_limit).single()
+            node_ids = [str(item) for item in (row.get("node_ids") or [])] if row else []
+            if not node_ids:
+                return {"nodes": [], "edges": []}
+            nodes = [
+                {
+                    "id": item["id"],
+                    "label": item["props"].get("title") or item["props"].get("name") or "Unknown",
+                    "type": (item["labels"][0].lower() if item["labels"] else "unknown"),
+                    "properties": self._to_json_safe(item["props"]),
+                }
+                for item in session.run(nodes_query, node_ids=node_ids).data()
+            ]
+            edges = [
+                {
+                    "id": item["id"],
+                    "source": item["source"],
+                    "target": item["target"],
+                    "type": item["type"],
+                    "properties": self._to_json_safe(item.get("props") or {}),
+                }
+                for item in session.run(
+                    edges_query,
+                    node_ids=node_ids,
+                    edge_limit=max(50, safe_limit * 4),
+                ).data()
+            ]
+            return {"nodes": nodes, "edges": edges}
+
+    def get_node_details(self, node_id: str) -> dict[str, Any] | None:
+        node_query = """
+        MATCH (n)
+        WHERE elementId(n) = $node_id
+        RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props
+        LIMIT 1
+        """
+        neighbors_query = """
+        MATCH (n)
+        WHERE elementId(n) = $node_id
+        OPTIONAL MATCH (n)-[r]-(m)
+        WHERE NOT m:InsightSnapshot
+          AND NOT m:GraphInsight
+          AND NOT m:InsightBundle
+          AND NOT m:AgentJob
+          AND NOT m:ReadingPath
+          AND NOT m:KnowledgeGap
+        RETURN elementId(m) AS id,
+               labels(m) AS labels,
+               properties(m) AS props,
+               type(r) AS relation
+        LIMIT 40
+        """
+        with self._driver.session() as session:
+            node = session.run(node_query, node_id=node_id).single()
+            if not node:
+                return None
+            neighbors = [
+                {
+                    "id": row["id"],
+                    "label": row["props"].get("title") or row["props"].get("name") or "Unknown",
+                    "type": (row["labels"][0].lower() if row["labels"] else "unknown"),
+                    "relation": row.get("relation"),
+                }
+                for row in session.run(neighbors_query, node_id=node_id).data()
+                if row.get("id")
+            ]
+            return {
+                "id": node["id"],
+                "label": node["props"].get("title") or node["props"].get("name") or "Unknown",
+                "type": (node["labels"][0].lower() if node["labels"] else "unknown"),
+                "properties": self._to_json_safe(node["props"]),
+                "degree": len(neighbors),
+                "neighbors": neighbors,
+            }
 
     def _to_json_safe(self, value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -341,6 +541,17 @@ class GraphRepository:
         with self._driver.session() as session:
             return session.run(query, fields=fields).data()
 
+    def get_concept_nodes_by_names(self, concepts: list[str]) -> list[dict[str, Any]]:
+        if not concepts:
+            return []
+        query = """
+        UNWIND $concepts AS concept_name
+        MATCH (c:Concept {name: concept_name})
+        RETURN elementId(c) AS id, c.name AS label, 'concept' AS type
+        """
+        with self._driver.session() as session:
+            return session.run(query, concepts=concepts).data()
+
     def get_field_reading_paths(self, limit_fields: int = 4, path_len: int = 4) -> list[dict[str, Any]]:
         query = """
         MATCH (f:Field)<-[:BELONGS_TO]-(b:Book)
@@ -526,12 +737,180 @@ class GraphRepository:
         with self._driver.session() as session:
             return session.run(query, limit=limit).data()
 
+    def get_concept_reading_paths(self, limit_concepts: int = 8, path_len: int = 4) -> list[dict[str, Any]]:
+        query = """
+        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)
+        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|EXPANDS]-(:Book)
+        WITH c, b, count(DISTINCT r) AS relationScore
+        ORDER BY c.name ASC, relationScore DESC, coalesce(b.publish_year, 9999) ASC, b.title ASC
+        WITH c, collect({
+            title: b.title,
+            publish_year: b.publish_year,
+            relation_score: relationScore
+        })[..$path_len] AS books
+        WHERE size(books) >= 2
+        RETURN c.name AS concept, books
+        ORDER BY size(books) DESC, concept ASC
+        LIMIT $limit_concepts
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit_concepts=limit_concepts, path_len=path_len).data()
+
+    def save_reading_path(
+        self,
+        concept: str,
+        books: list[str],
+        explanation: str,
+        signature: str,
+    ) -> dict[str, Any]:
+        query = """
+        MERGE (r:ReadingPath {signature: $signature})
+        ON CREATE SET r.id = randomUUID(), r.created_at = datetime()
+        SET r.concept = $concept,
+            r.books = $books,
+            r.explanation = $explanation,
+            r.updated_at = datetime()
+        RETURN r.id AS id,
+               r.concept AS concept,
+               r.books AS books,
+               r.explanation AS explanation,
+               r.created_at AS created_at
+        """
+        with self._driver.session() as session:
+            row = session.run(
+                query,
+                concept=concept,
+                books=books,
+                explanation=explanation,
+                signature=signature,
+            ).single()
+            if not row:
+                return {
+                    "id": "",
+                    "concept": concept,
+                    "books": books,
+                    "explanation": explanation,
+                    "created_at": "",
+                }
+            return {
+                "id": str(row.get("id") or ""),
+                "concept": str(row.get("concept") or concept),
+                "books": [str(book) for book in (row.get("books") or [])],
+                "explanation": str(row.get("explanation") or explanation),
+                "created_at": str(row.get("created_at") or ""),
+            }
+
+    def list_reading_paths(self, limit: int = 30) -> list[dict[str, Any]]:
+        query = """
+        MATCH (r:ReadingPath)
+        RETURN r.concept AS concept,
+               r.books AS books,
+               r.explanation AS explanation,
+               r.created_at AS created_at
+        ORDER BY r.created_at DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(query, limit=limit).data()
+            return [
+                {
+                    "concept": str(row.get("concept") or ""),
+                    "books": [str(book) for book in (row.get("books") or [])],
+                    "explanation": str(row.get("explanation") or ""),
+                    "created_at": str(row.get("created_at") or ""),
+                }
+                for row in rows
+            ]
+
+    def get_books_for_fields(self, fields: list[str], limit: int = 5) -> list[str]:
+        if not fields:
+            return []
+        query = """
+        UNWIND $fields AS field_name
+        MATCH (f:Field {name: field_name})<-[:BELONGS_TO]-(b:Book)
+        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|EXPANDS]-(:Book)
+        WITH b, count(DISTINCT r) AS relationScore
+        RETURN b.title AS title
+        ORDER BY relationScore DESC, coalesce(b.publish_year, 9999) ASC, title ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(query, fields=fields, limit=limit).data()
+            return [str(row["title"]) for row in rows if row.get("title")]
+
+    def save_knowledge_gap(
+        self,
+        gap: str,
+        reason: str,
+        candidate_books: list[str],
+        signature: str,
+    ) -> dict[str, Any]:
+        query = """
+        MERGE (k:KnowledgeGap {signature: $signature})
+        ON CREATE SET k.id = randomUUID(), k.created_at = datetime()
+        SET k.gap = $gap,
+            k.reason = $reason,
+            k.candidate_books = $candidate_books,
+            k.updated_at = datetime()
+        RETURN k.id AS id,
+               k.gap AS gap,
+               k.reason AS reason,
+               k.candidate_books AS candidate_books,
+               k.created_at AS created_at
+        """
+        with self._driver.session() as session:
+            row = session.run(
+                query,
+                gap=gap,
+                reason=reason,
+                candidate_books=candidate_books,
+                signature=signature,
+            ).single()
+            if not row:
+                return {
+                    "id": "",
+                    "gap": gap,
+                    "reason": reason,
+                    "candidate_books": candidate_books,
+                    "created_at": "",
+                }
+            return {
+                "id": str(row.get("id") or ""),
+                "gap": str(row.get("gap") or gap),
+                "reason": str(row.get("reason") or reason),
+                "candidate_books": [str(book) for book in (row.get("candidate_books") or [])],
+                "created_at": str(row.get("created_at") or ""),
+            }
+
+    def list_knowledge_gaps(self, limit: int = 30) -> list[dict[str, Any]]:
+        query = """
+        MATCH (k:KnowledgeGap)
+        RETURN k.gap AS gap,
+               k.reason AS reason,
+               k.candidate_books AS candidate_books,
+               k.created_at AS created_at
+        ORDER BY k.created_at DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(query, limit=limit).data()
+            return [
+                {
+                    "gap": str(row.get("gap") or ""),
+                    "reason": str(row.get("reason") or ""),
+                    "candidate_books": [str(book) for book in (row.get("candidate_books") or [])],
+                    "created_at": str(row.get("created_at") or ""),
+                }
+                for row in rows
+            ]
+
     def save_graph_insight(
         self,
         insight_type: str,
         title: str,
         description: str,
-        nodes: list[str],
+        node_ids: list[str],
+        related_nodes: list[str],
         signature: str,
     ) -> dict[str, Any]:
         query = """
@@ -540,13 +919,16 @@ class GraphRepository:
         SET g.type = $insight_type,
             g.title = $title,
             g.description = $description,
-            g.nodes = $nodes,
+            g.node_ids = $node_ids,
+            g.related_nodes = $related_nodes,
+            g.nodes = $related_nodes,
             g.updated_at = datetime()
         RETURN g.id AS id,
                g.type AS type,
                g.title AS title,
                g.description AS description,
-               g.nodes AS nodes,
+               g.node_ids AS node_ids,
+               coalesce(g.related_nodes, g.nodes, []) AS related_nodes,
                g.created_at AS created_at
         """
         with self._driver.session() as session:
@@ -556,7 +938,8 @@ class GraphRepository:
                 insight_type=insight_type,
                 title=title,
                 description=description,
-                nodes=nodes,
+                node_ids=node_ids,
+                related_nodes=related_nodes,
             ).single()
             if not row:
                 return {
@@ -564,7 +947,8 @@ class GraphRepository:
                     "type": insight_type,
                     "title": title,
                     "description": description,
-                    "nodes": nodes,
+                    "node_ids": node_ids,
+                    "related_nodes": related_nodes,
                     "created_at": "",
                 }
             return {
@@ -572,7 +956,8 @@ class GraphRepository:
                 "type": str(row.get("type") or insight_type),
                 "title": str(row.get("title") or title),
                 "description": str(row.get("description") or description),
-                "nodes": [str(node) for node in (row.get("nodes") or [])],
+                "node_ids": [str(node) for node in (row.get("node_ids") or [])],
+                "related_nodes": [str(node) for node in (row.get("related_nodes") or [])],
                 "created_at": str(row.get("created_at") or ""),
             }
 
@@ -583,7 +968,8 @@ class GraphRepository:
                g.type AS type,
                g.title AS title,
                g.description AS description,
-               g.nodes AS nodes,
+               g.node_ids AS node_ids,
+               coalesce(g.related_nodes, g.nodes, []) AS related_nodes,
                g.created_at AS created_at
         ORDER BY g.created_at DESC
         LIMIT $limit
@@ -596,7 +982,8 @@ class GraphRepository:
                     "type": str(row.get("type") or ""),
                     "title": str(row.get("title") or ""),
                     "description": str(row.get("description") or ""),
-                    "nodes": [str(node) for node in (row.get("nodes") or [])],
+                    "node_ids": [str(node) for node in (row.get("node_ids") or [])],
+                    "related_nodes": [str(node) for node in (row.get("related_nodes") or [])],
                     "created_at": str(row.get("created_at") or ""),
                 }
                 for row in rows
@@ -609,7 +996,8 @@ class GraphRepository:
                g.type AS type,
                g.title AS title,
                g.description AS description,
-               g.nodes AS nodes,
+               g.node_ids AS node_ids,
+               coalesce(g.related_nodes, g.nodes, []) AS related_nodes,
                g.created_at AS created_at
         LIMIT 1
         """
@@ -622,9 +1010,90 @@ class GraphRepository:
                 "type": str(row.get("type") or ""),
                 "title": str(row.get("title") or ""),
                 "description": str(row.get("description") or ""),
-                "nodes": [str(node) for node in (row.get("nodes") or [])],
+                "node_ids": [str(node) for node in (row.get("node_ids") or [])],
+                "related_nodes": [str(node) for node in (row.get("related_nodes") or [])],
                 "created_at": str(row.get("created_at") or ""),
             }
+
+    def save_latest_insight_bundle(self, bundle: dict[str, Any]) -> None:
+        query = """
+        MERGE (i:InsightBundle {name: 'latest'})
+        ON CREATE SET i.id = randomUUID(), i.created_at = datetime()
+        SET i.payload_json = $payload_json,
+            i.generated_at = datetime(),
+            i.updated_at = datetime()
+        """
+        with self._driver.session() as session:
+            session.run(query, payload_json=json.dumps(bundle, ensure_ascii=True)).consume()
+
+    def get_latest_insight_bundle(self) -> dict[str, Any] | None:
+        query = """
+        MATCH (i:InsightBundle {name: 'latest'})
+        RETURN i.payload_json AS payload_json
+        LIMIT 1
+        """
+        with self._driver.session() as session:
+            row = session.run(query).single()
+            if not row:
+                return None
+            payload_json = row.get("payload_json")
+            if not payload_json:
+                return None
+            try:
+                parsed = json.loads(str(payload_json))
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+
+    def try_acquire_agent_job(self, name: str, owner_id: str, lease_seconds: int) -> bool:
+        query = """
+        MERGE (j:AgentJob {name: $name})
+        ON CREATE SET j.created_at = datetime(), j.status = 'idle'
+        WITH j
+        WHERE j.status <> 'running'
+           OR j.owner_id = $owner_id
+           OR j.lease_expires_at IS NULL
+           OR j.lease_expires_at < datetime()
+        SET j.owner_id = $owner_id,
+            j.status = 'running',
+            j.error = NULL,
+            j.last_started_at = datetime(),
+            j.lease_expires_at = datetime() + duration({seconds: $lease_seconds}),
+            j.updated_at = datetime()
+        RETURN j.name AS name
+        """
+        with self._driver.session() as session:
+            row = session.run(
+                query,
+                name=name,
+                owner_id=owner_id,
+                lease_seconds=max(1, lease_seconds),
+            ).single()
+            return bool(row)
+
+    def complete_agent_job_run(self, name: str, owner_id: str, status: str, error: str | None = None) -> None:
+        normalized_status = "error" if status == "error" else "idle"
+        query = """
+        MATCH (j:AgentJob {name: $name})
+        WHERE j.owner_id = $owner_id
+        SET j.status = $status,
+            j.error = $error,
+            j.last_run_at = datetime(),
+            j.owner_id = NULL,
+            j.lease_expires_at = NULL,
+            j.updated_at = datetime()
+        FOREACH (_ IN CASE WHEN $status = 'idle' THEN [1] ELSE [] END |
+            SET j.last_success_at = j.last_run_at
+        )
+        """
+        with self._driver.session() as session:
+            session.run(
+                query,
+                name=name,
+                owner_id=owner_id,
+                status=normalized_status,
+                error=(error or None),
+            ).consume()
 
     def get_chat_subgraph(
         self,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.agents.chat_agent import ChatAgent
-from app.graph.neo4j_client import GraphRepository
+from app.graph.chat_repo import ChatGraphRepository
 
 
 @dataclass(slots=True)
@@ -20,7 +20,7 @@ class ChatResult:
 
 
 class ChatService:
-    def __init__(self, graph_repo: GraphRepository, chat_agent: ChatAgent) -> None:
+    def __init__(self, graph_repo: ChatGraphRepository, chat_agent: ChatAgent) -> None:
         self._graph_repo = graph_repo
         self._chat_agent = chat_agent
 

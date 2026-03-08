@@ -5,7 +5,7 @@ from hashlib import sha1
 from typing import Any
 
 from app.agents.llm_client import LLMClient, LLMError
-from app.graph.neo4j_client import GraphRepository
+from app.graph.exploration_repo import ExplorationGraphRepository
 
 
 @dataclass(slots=True)
@@ -13,7 +13,8 @@ class GraphDiscovery:
     insight_type: str
     title: str
     description: str
-    nodes: list[str]
+    node_ids: list[str]
+    related_nodes: list[str]
     signature: str
 
 
@@ -22,7 +23,7 @@ class GraphExplorerAgent:
     Periodically scans the graph for high-value structures and stores discoveries.
     """
 
-    def __init__(self, repo: GraphRepository, llm_client: LLMClient | None = None) -> None:
+    def __init__(self, repo: ExplorationGraphRepository, llm_client: LLMClient | None = None) -> None:
         self._repo = repo
         self._llm_client = llm_client
 
@@ -38,7 +39,8 @@ class GraphExplorerAgent:
                 insight_type=discovery.insight_type,
                 title=discovery.title,
                 description=discovery.description,
-                nodes=discovery.nodes,
+                node_ids=discovery.node_ids,
+                related_nodes=discovery.related_nodes,
                 signature=discovery.signature,
             )
             saved.append(record)
@@ -51,15 +53,21 @@ class GraphExplorerAgent:
             books = [str(title) for title in cluster.get("books", []) if title][:6]
             if len(books) < 2:
                 continue
+            book_nodes = self._repo.get_book_nodes_by_titles(books)
+            node_ids = [str(node.get("id")) for node in book_nodes if node.get("id")]
+            related_nodes = [str(node.get("label")) for node in book_nodes if node.get("label")]
+            if len(node_ids) < 2:
+                continue
             community = str(cluster.get("communityId") or "cluster")
-            title, description = self._describe_cluster(community, books)
-            signature = self._signature("cluster", community, books)
+            title, description = self._describe_cluster(community, related_nodes)
+            signature = self._signature("cluster", community, node_ids)
             output.append(
                 GraphDiscovery(
                     insight_type="cluster",
                     title=title,
                     description=description,
-                    nodes=books,
+                    node_ids=node_ids,
+                    related_nodes=related_nodes,
                     signature=signature,
                 )
             )
@@ -70,17 +78,23 @@ class GraphExplorerAgent:
         books = [str(row.get("title")) for row in ranked if row.get("title")][:5]
         if not books:
             return []
+        book_nodes = self._repo.get_book_nodes_by_titles(books)
+        node_ids = [str(node.get("id")) for node in book_nodes if node.get("id")]
+        related_nodes = [str(node.get("label")) for node in book_nodes if node.get("label")]
+        if not node_ids:
+            return []
         title = "Central Books Driving The Graph"
         description = (
-            f"These books are highly connected and likely shape many other topics: {', '.join(books[:3])}."
+            f"These books are highly connected and likely shape many other topics: {', '.join(related_nodes[:3])}."
         )
-        signature = self._signature("central", "books", books)
+        signature = self._signature("central", "books", node_ids)
         return [
             GraphDiscovery(
                 insight_type="centrality",
                 title=title,
                 description=description,
-                nodes=books,
+                node_ids=node_ids,
+                related_nodes=related_nodes,
                 signature=signature,
             )
         ]
@@ -96,18 +110,26 @@ class GraphExplorerAgent:
             if field_count < 2:
                 continue
             fields = [str(name) for name in row.get("fields", []) if name][:5]
+            concept_nodes = self._repo.get_concept_nodes_by_names([concept])
+            field_nodes = self._repo.get_field_nodes_by_names(fields)
+            nodes = concept_nodes + field_nodes
+            node_ids = [str(node.get("id")) for node in nodes if node.get("id")]
+            related_nodes = [str(node.get("label")) for node in nodes if node.get("label")]
+            if len(node_ids) < 2:
+                continue
             title = f"Cross-Field Concept: {concept}"
             description = (
                 f"'{concept}' appears across {field_count} fields ({', '.join(fields)}), "
                 "making it a bridge concept for interdisciplinary reading."
             )
-            signature = self._signature("cross_field_concept", concept, fields)
+            signature = self._signature("cross_field_concept", concept, node_ids)
             output.append(
                 GraphDiscovery(
                     insight_type="cross_field_concept",
                     title=title,
                     description=description,
-                    nodes=[concept, *fields],
+                    node_ids=node_ids,
+                    related_nodes=related_nodes,
                     signature=signature,
                 )
             )

@@ -185,6 +185,190 @@ button:disabled {
   border-radius: 14px;
   overflow: hidden;
   background: var(--panel-strong);
+  position: relative;
+}
+
+.graph-explorer {
+  display: grid;
+  gap: 12px;
+}
+
+.graph-toolbar {
+  padding: 14px;
+}
+
+.chip-button {
+  background: #eef5f8;
+  color: #1b4552;
+  border: 1px solid #c9dbe2;
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 0.82rem;
+}
+
+.chip-button:hover {
+  background: #e2f0f4;
+}
+
+.graph-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.graph-drawer {
+  min-height: 260px;
+}
+
+.graph-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #46606d;
+  background: rgba(255, 255, 255, 0.75);
+  z-index: 3;
+}
+
+.ingest-progress {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #bed3da;
+  background: rgba(235, 244, 247, 0.8);
+  border-radius: 12px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #d8e4ea;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #0b7a71, #2f6995);
+  transition: width 0.35s ease;
+}
+
+.error-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #efb5b5;
+  background: #fff4f4;
+  border-radius: 12px;
+}
+
+.error-panel h3 {
+  margin: 0 0 4px;
+  color: #8b1c1c;
+  font-size: 1rem;
+}
+
+.error-panel p {
+  margin: 0;
+  color: #7a2323;
+}
+
+.book-result-card {
+  display: grid;
+  gap: 10px;
+}
+
+.result-block h4 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  color: #214451;
+}
+
+.insights-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.insights-hero {
+  background:
+    radial-gradient(700px 300px at 0% 0%, rgba(11, 122, 113, 0.16), transparent 70%),
+    radial-gradient(600px 280px at 100% 0%, rgba(56, 94, 157, 0.14), transparent 72%),
+    var(--panel);
+}
+
+.insights-hero-head {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+
+.insights-score {
+  justify-self: start;
+  min-width: 130px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(9, 92, 86, 0.12);
+  border: 1px solid #9dc3cc;
+  color: #0a5d56;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.insights-score span {
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.insights-score small {
+  font-size: 0.95rem;
+  color: #2e5f69;
+}
+
+.insights-list,
+.insights-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+}
+
+.insights-list li,
+.insights-steps li {
+  color: #1f3d48;
+  line-height: 1.35;
+}
+
+.insights-detail summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: #184652;
+}
+
+.insights-detail-body {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.insights-detail-body p {
+  margin: 0;
+}
+
+@media (min-width: 900px) {
+  .graph-layout {
+    grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+    align-items: start;
+  }
+
+  .insights-hero-head {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+
+  .insights-score {
+    justify-self: end;
+  }
 }
 
 @keyframes fadeIn {

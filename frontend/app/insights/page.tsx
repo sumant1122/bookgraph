@@ -107,135 +107,139 @@ export default function InsightsPage() {
     return <div className="card">Loading insights...</div>;
   }
 
+  const healthScore = data.quality_scores?.overall_score ?? data.narrative.graph_health_score;
+  const topCentralBooks = data.central_books.central_books.slice(0, 3);
+  const topClusters = data.clusters.clusters.slice(0, 3);
+  const topMissing = data.missing_topics.missing_topics.slice(0, 4);
+  const topActions = data.recommendations.slice(0, 5);
+
   return (
-    <div className="grid two">
-      <div className="card">
-        <h3 className="page-title">Graph Health</h3>
-        <p style={{ fontSize: 28, margin: "6px 0" }}>
-          {data.quality_scores?.overall_score ?? data.narrative.graph_health_score}/100
-        </p>
-        <p>{data.graph_stats.summary}</p>
-        <p>
-          <strong>Freshness:</strong> {new Date(data.freshness.generated_at).toLocaleString()}
-        </p>
-        <p>
-          <strong>Confidence:</strong> {data.freshness.confidence.label} (
-          {(data.freshness.confidence.score * 100).toFixed(0)}%)
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">LLM Summary</h3>
-        <p>{data.narrative.summary}</p>
-        <p>{data.time_delta.summary}</p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Central Books</h3>
-        <p>{data.central_books.summary}</p>
-        <p>
-          {data.central_books.central_books
-            .map((b) => `${b.title} (${b.score.toFixed(2)})`)
-            .join(", ") || "No centrality data yet."}
-        </p>
-        <p>
-          <strong>Evidence:</strong>{" "}
-          {data.central_books.evidence?.nodes?.map((n) => n.label).join(", ") || "No evidence"}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Clusters</h3>
-        <p>Detected {data.clusters.cluster_count} groups.</p>
-        <p>
-          {data.clusters.clusters
-            .slice(0, 3)
-            .map((cluster) => `${cluster.communityId}: ${cluster.books.slice(0, 3).join(", ")}`)
-            .join(" | ") || "No cluster data yet."}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Missing Topics</h3>
-        <p>{data.missing_topics.summary}</p>
-        <p>
-          {data.missing_topics.missing_topics
-            .map((topic) => `${topic.field} (${topic.bookCount})`)
-            .join(", ") || "No gaps found."}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Coverage</h3>
-        <p>
-          <strong>Top fields:</strong>{" "}
-          {data.coverage.top_fields.map((f) => `${f.field} (${f.bookCount})`).join(", ") || "N/A"}
-        </p>
-        <p>
-          <strong>Top concepts:</strong>{" "}
-          {data.coverage.top_concepts
-            .map((c) => `${c.concept} (${c.bookCount})`)
-            .join(", ") || "N/A"}
-        </p>
-        <p>
-          <strong>Unlinked books:</strong>{" "}
-          {data.coverage.unlinked_books.map((b) => b.title).join(", ") || "None"}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Recommendations</h3>
-        <p>
-          {data.recommendations
-            .map((rec) => `[${rec.effort}] ${rec.action}`)
-            .join(" ") || "No recommendations yet."}
-        </p>
-        <p>{data.narrative.recommended_actions?.join(" ")}</p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Quality Breakdown</h3>
-        <p>Relationship quality: {data.quality_scores.breakdown.relationship_quality}</p>
-        <p>Concept coverage: {data.quality_scores.breakdown.concept_coverage}</p>
-        <p>Cluster cohesion: {data.quality_scores.breakdown.cluster_cohesion}</p>
-        <p>Link completeness: {data.quality_scores.breakdown.link_completeness}</p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Reading Paths</h3>
-        <p>
-          {data.reading_paths
-            .map((path) => `${path.field}: ${path.path.map((item) => item.title).join(" -> ")}`)
-            .join(" | ") || "No reading paths yet."}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Overlap vs Contradictions</h3>
-        <p>
-          Overlap links: {data.overlap_contradiction.overlap_count}, Contradictions:{" "}
-          {data.overlap_contradiction.contradiction_count}
-        </p>
-        <p>
-          {data.overlap_contradiction.samples
-            .slice(0, 4)
-            .map((s) => `${s.source} ${s.relation} ${s.target}`)
-            .join(" | ") || "No relationship samples yet."}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Sparse Bridges</h3>
-        <p>
-          {data.sparse_bridges
-            .map((b) => `${b.field_a} <-> ${b.field_b}`)
-            .join(", ") || "No sparse bridge zones detected."}
-        </p>
-      </div>
-      <div className="card">
-        <h3 className="page-title">Field Dashboards</h3>
-        <p>
-          {data.field_dashboards
-            .slice(0, 3)
-            .map(
-              (d) =>
-                `${d.field}: books(${d.top_books.map((b) => b.title).join(", ")}), concepts(${d.top_concepts
-                  .map((c) => c.concept)
-                  .join(", ")})`
-            )
-            .join(" | ") || "No field dashboards yet."}
-        </p>
-      </div>
+    <div className="insights-shell">
+      <section className="card insights-hero">
+        <div className="insights-hero-head">
+          <div>
+            <h2 className="page-title">Decision Dashboard</h2>
+            <p className="page-subtitle">{data.narrative.summary}</p>
+            <p className="muted">{data.time_delta.summary}</p>
+          </div>
+          <div className="insights-score">
+            <span>{healthScore}</span>
+            <small>/100</small>
+          </div>
+        </div>
+        <div className="row">
+          <span className="chip">Books {data.graph_stats.books}</span>
+          <span className="chip">Concepts {data.graph_stats.concepts}</span>
+          <span className="chip">Edges {data.graph_stats.book_edges}</span>
+          <span className="chip">Freshness {new Date(data.freshness.generated_at).toLocaleString()}</span>
+          <span className="chip">
+            Confidence {data.freshness.confidence.label} ({(data.freshness.confidence.score * 100).toFixed(0)}%)
+          </span>
+        </div>
+      </section>
+
+      <section className="grid two">
+        <article className="card">
+          <h3 className="page-title">Key Discoveries</h3>
+          <ul className="insights-list">
+            <li>
+              Central books:{" "}
+              {topCentralBooks.map((book) => `${book.title} (${book.score.toFixed(2)})`).join(", ") || "No data yet"}
+            </li>
+            <li>
+              Clusters:{" "}
+              {topClusters
+                .map((cluster) => `${cluster.communityId}: ${cluster.books.slice(0, 3).join(", ")}`)
+                .join(" | ") || "No data yet"}
+            </li>
+            <li>
+              Missing topics:{" "}
+              {topMissing.map((topic) => `${topic.field} (${topic.bookCount})`).join(", ") || "No data yet"}
+            </li>
+          </ul>
+        </article>
+        <article className="card">
+          <h3 className="page-title">Action Queue</h3>
+          <ol className="insights-steps">
+            {topActions.length ? (
+              topActions.map((action, index) => (
+                <li key={`${action.type}-${index}`}>
+                  <strong>[{action.effort}]</strong> {action.action}
+                </li>
+              ))
+            ) : (
+              <li>No actions available yet.</li>
+            )}
+          </ol>
+        </article>
+      </section>
+
+      <section className="grid">
+        <details className="card insights-detail" open>
+          <summary>Coverage and Quality</summary>
+          <div className="insights-detail-body">
+            <p>
+              Top fields: {data.coverage.top_fields.map((field) => `${field.field} (${field.bookCount})`).join(", ") || "N/A"}
+            </p>
+            <p>
+              Top concepts:{" "}
+              {data.coverage.top_concepts.map((concept) => `${concept.concept} (${concept.bookCount})`).join(", ") || "N/A"}
+            </p>
+            <p>Unlinked books: {data.coverage.unlinked_books.map((book) => book.title).join(", ") || "None"}</p>
+            <p>Relationship quality: {data.quality_scores.breakdown.relationship_quality}</p>
+            <p>Concept coverage: {data.quality_scores.breakdown.concept_coverage}</p>
+            <p>Cluster cohesion: {data.quality_scores.breakdown.cluster_cohesion}</p>
+            <p>Link completeness: {data.quality_scores.breakdown.link_completeness}</p>
+          </div>
+        </details>
+
+        <details className="card insights-detail">
+          <summary>Reading Paths and Contradictions</summary>
+          <div className="insights-detail-body">
+            <p>
+              Reading paths:{" "}
+              {data.reading_paths
+                .map((path) => `${path.field}: ${path.path.map((item) => item.title).join(" -> ")}`)
+                .join(" | ") || "No generated paths yet."}
+            </p>
+            <p>
+              Overlap links: {data.overlap_contradiction.overlap_count}, contradictions:{" "}
+              {data.overlap_contradiction.contradiction_count}
+            </p>
+            <p>
+              Samples:{" "}
+              {data.overlap_contradiction.samples
+                .slice(0, 5)
+                .map((sample) => `${sample.source} ${sample.relation} ${sample.target}`)
+                .join(" | ") || "No samples yet."}
+            </p>
+          </div>
+        </details>
+
+        <details className="card insights-detail">
+          <summary>Sparse Bridges and Field Dashboards</summary>
+          <div className="insights-detail-body">
+            <p>
+              Sparse bridge zones:{" "}
+              {data.sparse_bridges
+                .map((bridge) => `${bridge.field_a} <-> ${bridge.field_b}`)
+                .join(", ") || "No sparse bridge zones detected."}
+            </p>
+            <p>
+              Dashboards:{" "}
+              {data.field_dashboards
+                .slice(0, 3)
+                .map(
+                  (dashboard) =>
+                    `${dashboard.field}: books(${dashboard.top_books.map((book) => book.title).join(", ")}), concepts(${dashboard.top_concepts
+                      .map((concept) => concept.concept)
+                      .join(", ")})`
+                )
+                .join(" | ") || "No field dashboards yet."}
+            </p>
+          </div>
+        </details>
+      </section>
     </div>
   );
 }

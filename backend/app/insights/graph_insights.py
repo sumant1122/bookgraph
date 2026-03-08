@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.agents.insight_agent import InsightAgent
-from app.graph.neo4j_client import GraphRepository
+from app.graph.analytics_repo import AnalyticsGraphRepository
 
 
 class GraphInsightEngine:
-    def __init__(self, repo: GraphRepository, insight_agent: InsightAgent | None = None) -> None:
+    def __init__(self, repo: AnalyticsGraphRepository, insight_agent: InsightAgent | None = None) -> None:
         self._repo = repo
         self._insight_agent = insight_agent or InsightAgent()
 
@@ -275,6 +275,17 @@ class GraphInsightEngine:
                 },
             },
         }
+
+    def materialize_latest_bundle(self) -> dict[str, Any]:
+        bundle = self.build_insight_bundle()
+        self._safe(self._repo.save_latest_insight_bundle, None, bundle=bundle)
+        return bundle
+
+    def get_latest_bundle(self) -> dict[str, Any]:
+        cached = self._safe(self._repo.get_latest_insight_bundle, None)
+        if cached:
+            return cached
+        return self.materialize_latest_bundle()
 
     def _safe(self, fn, default, *args, **kwargs):  # noqa: ANN001
         try:

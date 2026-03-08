@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useState } from "react";
 
 type ChatResponse = {
@@ -105,12 +106,18 @@ export default function ChatPage() {
           </div>
           <div className="card">
             <h3 className="page-title">Evidence Nodes</h3>
-            <p>
-              {result.evidence_nodes
-                .slice(0, 8)
-                .map((node) => `${node.label} [${node.type}]`)
-                .join(", ") || "No evidence nodes returned."}
-            </p>
+            <div className="row">
+              {result.evidence_nodes.slice(0, 12).map((node) => (
+                <Link
+                  key={node.id}
+                  href={`/graph?node_id=${encodeURIComponent(node.id)}&highlight=${encodeURIComponent(node.id)}`}
+                  className="chip"
+                >
+                  {node.label} [{node.type}]
+                </Link>
+              ))}
+              {!result.evidence_nodes.length && <span className="muted">No evidence nodes returned.</span>}
+            </div>
             <p>
               <strong>Citations:</strong> {result.citations.join(", ") || "None"}
             </p>

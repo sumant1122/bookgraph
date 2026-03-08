@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from app.agents.concept_agent import ConceptAgent
 from app.agents.relationship_agent import RelationshipAgent
 from app.enrichment.concept_extractor import ConceptExtractor
-from app.graph.neo4j_client import GraphRepository
+from app.graph.book_repo import BookGraphRepository
 from app.ingestion.openlibrary import BookMetadata, OpenLibraryClient
 
 
@@ -21,7 +21,7 @@ class BookService:
     def __init__(
         self,
         openlibrary_client: OpenLibraryClient,
-        graph_repo: GraphRepository,
+        graph_repo: BookGraphRepository,
         concept_agent: ConceptAgent,
         relationship_agent: RelationshipAgent,
         relationship_scan_limit: int = 20,
@@ -58,6 +58,8 @@ class BookService:
         candidate_books = self._graph_repo.get_books_for_relationship_scan(
             exclude_title=new_book.title,
             limit=self._relationship_scan_limit,
+            preferred_fields=new_book.subjects,
+            publish_year=new_book.publish_year,
         )
         created = 0
         source_payload = {
