@@ -1,6 +1,32 @@
 # BookGraph
 
-BookGraph is an open-source MVP that transforms a list of books into a knowledge graph of books, authors, concepts, fields, and cross-book relationships using AI.
+BookGraph turns your reading list into a knowledge graph and an AI discovery engine.
+
+It ingests books, extracts concepts and fields, links related titles, and continuously generates discoveries like clusters, reading paths, and knowledge gaps.
+
+## What The App Does
+
+1. Ingest a book title from Open Library metadata.
+2. Extract concepts and fields using LLM-backed agents.
+3. Build graph relationships across books.
+4. Run exploration agents on a schedule to generate insights.
+5. Let you search and explore focused subgraphs in the UI.
+
+## Core Features
+
+- Add books and auto-enrich them into graph nodes and edges.
+- Search-first graph exploration with node expansion and detail drawer.
+- Discovery feed with cluster and cross-field insights.
+- Reading path recommendations.
+- Knowledge gap detection with suggested bridge books.
+- Evidence-grounded graph chat.
+
+## Tech Stack
+
+- Frontend: Next.js + React Flow
+- Backend: FastAPI
+- Graph DB: Neo4j
+- LLM providers: OpenAI, OpenRouter, or Ollama
 
 ## Project Structure
 
@@ -8,30 +34,100 @@ BookGraph is an open-source MVP that transforms a list of books into a knowledge
 bookgraph/
 ├── backend/
 │   ├── app/
-│   │   ├── ingestion/
-│   │   ├── enrichment/
 │   │   ├── agents/
-│   │   ├── graph/
-│   │   ├── insights/
 │   │   ├── api/
-│   │   └── main.py
+│   │   ├── enrichment/
+│   │   ├── graph/
+│   │   ├── ingestion/
+│   │   ├── insights/
+│   │   └── services/
 │   ├── main.py
 │   └── requirements.txt
 ├── frontend/
 │   ├── app/
 │   ├── components/
-│   └── graph/
+│   └── lib/
 ├── docker/
 │   └── docker-compose.yml
 └── README.md
 ```
 
-## Backend MVP Features
+## Quick Start
 
-- `POST /books` ingests a book title, fetches Open Library metadata, enriches with AI concepts/fields, and creates graph relationships.
-- `GET /graph` returns graph nodes and edges for visualization.
-- `GET /insights` returns central books, clusters, missing-topic coverage, graph stats, actionable recommendations, and an optional LLM-synthesized narrative.
-- `POST /chat` answers graph-aware questions by retrieving a relevant subgraph and grounding responses in node/edge evidence.
+### Option 1: Docker (recommended)
+
+```bash
+cd docker
+docker compose up --build
+```
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
+- Neo4j Browser: `http://localhost:7474` (`neo4j` / `bookgraph`)
+
+### Option 2: Local dev (backend + frontend)
+
+Backend:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+cp .env.example .env
+uvicorn main:app --reload --port 8000
+```
+
+Frontend (new terminal):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Key API Endpoints
+
+- `POST /books` add and enrich a book
+- `GET /graph/search` search nodes
+- `GET /graph/focus` fetch focused subgraph by node id
+- `GET /graph/nodes/{node_id}` get node details + neighbors
+- `GET /discoveries` list generated discovery items
+- `GET /reading-paths` list generated reading paths
+- `GET /knowledge-gaps` list generated gaps
+- `GET /insights` decision dashboard snapshot
+- `POST /chat` ask graph-grounded questions
+
+## Graph Model
+
+Node labels:
+
+- `Book`
+- `Author`
+- `Concept`
+- `Field`
+
+Relationship types:
+
+- `WRITTEN_BY`
+- `MENTIONS`
+- `BELONGS_TO`
+- `RELATED_TO`
+- `INFLUENCED_BY`
+- `CONTRADICTS`
+- `EXPANDS`
+
+## LLM Configuration
+
+Set provider in backend `.env`:
+
+- OpenAI: `MODEL_PROVIDER=openai` and `OPENAI_API_KEY=...`
+- OpenRouter: `MODEL_PROVIDER=openrouter` and `OPENROUTER_API_KEY=...`
+- Ollama: `MODEL_PROVIDER=ollama` and optional `OLLAMA_BASE_URL`, `OLLAMA_MODEL`
+- Auto fallback: `MODEL_PROVIDER=auto`
+
+If no provider is configured, BookGraph falls back to deterministic heuristics where possible.
 
 ## Architecture
 
@@ -39,112 +135,26 @@ bookgraph/
 flowchart LR
     UI["Next.js Frontend"] --> API["FastAPI Backend"]
     API --> ING["Open Library Ingestion"]
-    API --> AGENTS["Concept + Relationship Agents"]
-    AGENTS --> LLM["Pluggable LLM Layer (OpenAI/OpenRouter/Ollama)"]
+    API --> AGENTS["Concept + Relationship + Exploration Agents"]
+    AGENTS --> LLM["Pluggable LLM Layer"]
     API --> NEO["Neo4j Graph DB"]
-    NEO --> INS["Insight Engine (PageRank/Centrality/Clusters)"]
+    NEO --> INS["Insight and Discovery Materialization"]
     INS --> API
 ```
 
-## Graph Model
+## Troubleshooting
 
-### Nodes
-- `Book`
-- `Author`
-- `Concept`
-- `Field`
+- Error: `Cannot reach backend at http://localhost:8000`
+  - Ensure backend is running on port `8000`.
+  - Verify with `curl http://localhost:8000/health`.
+  - If backend runs elsewhere, set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local`.
 
-### Relationships
-- `WRITTEN_BY`
-- `MENTIONS`
-- `RELATED_TO`
-- `INFLUENCED_BY`
-- `CONTRADICTS`
-- `EXPANDS`
-- `BELONGS_TO`
+- Error: `TypeError: got multiple values for argument 'query'`
+  - Pull latest code; this has been fixed in graph search query execution.
 
-## Run Locally
+## Contributing
 
-### Option 1: Docker Compose
-
-1. From `bookgraph/docker`, run:
-   ```bash
-   docker compose up --build
-   ```
-2. Open:
-   - Frontend: `http://localhost:3000`
-   - Backend docs: `http://localhost:8000/docs`
-   - Neo4j Browser: `http://localhost:7474` (user `neo4j`, password `bookgraph`)
-
-### Option 2: Backend only (local Python)
-
-1. Create env and install:
-   ```bash
-   cd backend
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-2. Copy env:
-   ```bash
-   cp .env.example .env
-   ```
-3. Start API:
-   ```bash
-   uvicorn main:app --reload
-   ```
-
-## LLM Provider Configuration
-
-Switch providers without code changes via environment variables:
-
-- OpenAI
-  - `MODEL_PROVIDER=openai`
-  - `OPENAI_API_KEY=<your_key>`
-  - Optional: `OPENAI_MODEL=gpt-4o-mini`
-- OpenRouter
-  - `MODEL_PROVIDER=openrouter`
-  - `OPENROUTER_API_KEY=<your_key>`
-  - Optional: `OPENROUTER_MODEL=openai/gpt-4o-mini`
-- Ollama
-  - `MODEL_PROVIDER=ollama`
-  - Optional: `OLLAMA_BASE_URL=http://localhost:11434/v1`
-  - Optional: `OLLAMA_MODEL=llama3.1:8b`
-
-Auto mode: `MODEL_PROVIDER=auto` uses OpenRouter first, then OpenAI (if keys are present). If no usable provider credentials are set, BookGraph falls back to deterministic heuristics.
-
-## API Examples
-
-### Add Book
-
-```bash
-curl -X POST http://localhost:8000/books \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Clean Code"}'
-```
-
-### Get Graph
-
-```bash
-curl http://localhost:8000/graph
-```
-
-### Get Insights
-
-```bash
-curl http://localhost:8000/insights
-```
-
-## Contribution Guide
-
-1. Fork the repo and create a branch with prefix `codex/`.
-2. Keep modules small and typed; use service-layer orchestration, not route-level business logic.
-3. Add tests for ingestion, agent parsing, and graph query behavior before merging larger changes.
-4. Open a PR with architecture notes and sample payloads.
-
-## Roadmap
-
-- Reading path generation
-- Knowledge gap detection
-- Multi-source ingestion (papers, videos)
-- Semantic question answering over graph
+1. Create a branch prefixed with `codex/`.
+2. Keep business logic in services/agents, not route handlers.
+3. Add tests for behavior changes.
+4. Open a PR with sample requests/responses for new APIs.
