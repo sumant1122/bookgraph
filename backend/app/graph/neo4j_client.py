@@ -346,27 +346,33 @@ class GraphRepository:
                 "samples": samples,
             }
 
-    def detect_sparse_bridges(self, limit: int = 8) -> list[dict[str, Any]]:
+    def detect_sparse_bridges(self, limit: int = 8, max_fields: int = 10) -> list[dict[str, Any]]:
         query = """
-        MATCH (f1:Field)<-[:BELONGS_TO]-(b1:Book)
-        MATCH (f2:Field)<-[:BELONGS_TO]-(b2:Book)
-        WHERE f1.name < f2.name
-        WITH f1, f2, count(DISTINCT b1) AS booksA, count(DISTINCT b2) AS booksB
-        WHERE booksA > 0 AND booksB > 0
+        MATCH (f:Field)<-[:BELONGS_TO]-(b:Book)
+        WITH f, count(DISTINCT b) AS bookCount
+        WHERE bookCount > 0
+        ORDER BY bookCount DESC, f.name ASC
+        LIMIT $max_fields
+        WITH collect({name: f.name, count: bookCount}) AS fieldRows
+        UNWIND fieldRows AS fa
+        UNWIND fieldRows AS fb
+        WITH fa, fb
+        WHERE fa.name < fb.name
         CALL {
-            WITH f1, f2
+            WITH fa, fb
             MATCH (x:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(y:Book)
-            WHERE (x)-[:BELONGS_TO]->(f1) AND (y)-[:BELONGS_TO]->(f2)
+            WHERE (x)-[:BELONGS_TO]->(:Field {name: fa.name})
+              AND (y)-[:BELONGS_TO]->(:Field {name: fb.name})
             RETURN count(DISTINCT r) AS crossLinks
         }
-        WITH f1, f2, booksA, booksB, crossLinks
+        WITH fa, fb, crossLinks
         WHERE crossLinks = 0
-        RETURN f1.name AS field_a, f2.name AS field_b, booksA AS books_a, booksB AS books_b
-        ORDER BY (booksA + booksB) DESC, field_a ASC, field_b ASC
+        RETURN fa.name AS field_a, fb.name AS field_b, fa.count AS books_a, fb.count AS books_b
+        ORDER BY (fa.count + fb.count) DESC, field_a ASC, field_b ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
-            return session.run(query, limit=limit).data()
+            return session.run(query, limit=limit, max_fields=max_fields).data()
 
     def get_field_dashboards(self, limit: int = 5) -> list[dict[str, Any]]:
         top_fields = self.get_field_coverage(limit=limit)

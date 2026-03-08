@@ -190,17 +190,34 @@ class GraphInsightEngine:
 
     def build_insight_bundle(self) -> dict[str, Any]:
         generated_at = datetime.now(timezone.utc).isoformat()
-        central = self.get_central_books()
-        clusters = self.detect_clusters()
-        missing = self.detect_missing_topics()
-        stats = self.get_graph_stats()
-        coverage = self.get_coverage()
-        sparse_bridges = self._repo.detect_sparse_bridges()
-        overlap = self._repo.get_overlap_contradiction_summary()
-        reading_paths = self._repo.get_field_reading_paths()
-        field_dashboards = self._repo.get_field_dashboards()
+        central = self._safe(self.get_central_books, {"central_books": [], "summary": "Unavailable", "evidence": {"nodes": [], "edges": []}})
+        clusters = self._safe(self.detect_clusters, {"clusters": [], "cluster_count": 0, "evidence": {"nodes": [], "edges": []}})
+        missing = self._safe(self.detect_missing_topics, {"missing_topics": [], "summary": "Unavailable", "evidence": {"nodes": [], "edges": []}})
+        stats = self._safe(
+            self.get_graph_stats,
+            {
+                "books": 0,
+                "authors": 0,
+                "concepts": 0,
+                "fields": 0,
+                "book_edges": 0,
+                "book_relationship_density": 0.0,
+                "summary": "Graph stats unavailable.",
+            },
+        )
+        coverage = self._safe(
+            self.get_coverage,
+            {"top_fields": [], "top_concepts": [], "unlinked_books": []},
+        )
+        sparse_bridges = self._safe(self._repo.detect_sparse_bridges, [])
+        overlap = self._safe(
+            self._repo.get_overlap_contradiction_summary,
+            {"overlap_count": 0, "contradiction_count": 0, "samples": []},
+        )
+        reading_paths = self._safe(self._repo.get_field_reading_paths, [])
+        field_dashboards = self._safe(self._repo.get_field_dashboards, [])
         quality = self.compute_quality_scores(stats, clusters, coverage)
-        previous_snapshots = self._repo.get_latest_insight_snapshots(limit=1)
+        previous_snapshots = self._safe(self._repo.get_latest_insight_snapshots, [], limit=1)
         previous = previous_snapshots[0] if previous_snapshots else None
         time_delta = self.build_time_delta(stats, previous)
         recommendations = self.build_recommendations(central, missing, coverage, sparse_bridges)
@@ -219,8 +236,17 @@ class GraphInsightEngine:
             "field_dashboards": field_dashboards,
             "recommendations": recommendations,
         }
-        narrative = self._insight_agent.synthesize(llm_payload)
-        self._repo.save_insight_snapshot(stats=stats, overall_score=quality["overall_score"])
+        narrative = self._safe(
+            self._insight_agent.synthesize,
+            {
+                "summary": "Narrative generation unavailable for this run.",
+                "key_findings": [],
+                "recommended_actions": [],
+                "graph_health_score": quality["overall_score"],
+            },
+            llm_payload,
+        )
+        self._safe(self._repo.save_insight_snapshot, None, stats=stats, overall_score=quality["overall_score"])
 
         return {
             "central_books": central,
@@ -249,3 +275,9 @@ class GraphInsightEngine:
                 },
             },
         }
+
+    def _safe(self, fn, default, *args, **kwargs):  # noqa: ANN001
+        try:
+            return fn(*args, **kwargs)
+        except Exception:  # noqa: BLE001
+            return default

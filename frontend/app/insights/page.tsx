@@ -81,15 +81,27 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
 
 export default function InsightsPage() {
   const [data, setData] = useState<InsightsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
-      const response = await fetch(`${API_BASE}/insights`);
-      const payload = (await response.json()) as InsightsResponse;
-      setData(payload);
+      try {
+        const response = await fetch(`${API_BASE}/insights`);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail ?? "Failed to load insights.");
+        }
+        setData(payload as InsightsResponse);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load insights.");
+      }
     };
     void load();
   }, []);
+
+  if (error) {
+    return <div className="card">Insights error: {error}</div>;
+  }
 
   if (!data) {
     return <div className="card">Loading insights...</div>;
