@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     neo4j_username: str = "neo4j"
     neo4j_password: str = "bookgraph"
 
-    llm_provider: str = "openai"
+    llm_provider: str = "auto"
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None

@@ -205,13 +205,13 @@ class GraphRepository:
 
     def get_graph_stats(self) -> dict[str, Any]:
         query = """
-        MATCH (b:Book)
+        OPTIONAL MATCH (b:Book)
         WITH count(DISTINCT b) AS books
-        MATCH (a:Author)
+        OPTIONAL MATCH (a:Author)
         WITH books, count(DISTINCT a) AS authors
-        MATCH (c:Concept)
+        OPTIONAL MATCH (c:Concept)
         WITH books, authors, count(DISTINCT c) AS concepts
-        MATCH (f:Field)
+        OPTIONAL MATCH (f:Field)
         WITH books, authors, concepts, count(DISTINCT f) AS fields
         OPTIONAL MATCH (:Book)-[r]->(:Book)
         WITH books, authors, concepts, fields, count(DISTINCT r) AS bookEdges

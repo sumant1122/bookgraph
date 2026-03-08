@@ -11,7 +11,7 @@ class InsightAgent:
 
     def synthesize(self, insight_payload: dict[str, Any]) -> dict[str, Any]:
         if not self._llm_client:
-            return self._fallback_summary(insight_payload)
+            return self._fallback_summary(insight_payload, reason="no_llm_client")
 
         system_prompt = (
             "You are a graph intelligence analyst for a book knowledge graph. "
@@ -33,9 +33,9 @@ class InsightAgent:
                 "graph_health_score": self._clamp_score(result.get("graph_health_score")),
             }
         except LLMError:
-            return self._fallback_summary(insight_payload)
+            return self._fallback_summary(insight_payload, reason="llm_error")
 
-    def _fallback_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _fallback_summary(self, payload: dict[str, Any], reason: str) -> dict[str, Any]:
         stats = payload.get("graph_stats", {})
         books = int(stats.get("books", 0))
         density = float(stats.get("book_relationship_density", 0))
@@ -56,8 +56,12 @@ class InsightAgent:
         ]
         if gap_fields:
             actions[0] = f"Add books in sparse fields: {', '.join(gap_fields)}."
+        reason_message = {
+            "no_llm_client": "Generated deterministic insights because no LLM client was configured.",
+            "llm_error": "Generated deterministic insights because the LLM call failed or returned invalid JSON.",
+        }.get(reason, "Generated deterministic insights.")
         return {
-            "summary": "Generated deterministic insights because no LLM provider was available.",
+            "summary": reason_message,
             "key_findings": findings,
             "recommended_actions": actions,
             "graph_health_score": health,
@@ -69,4 +73,3 @@ class InsightAgent:
         except (TypeError, ValueError):
             value = 50
         return max(0, min(100, value))
-

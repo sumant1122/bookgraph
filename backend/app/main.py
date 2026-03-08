@@ -21,7 +21,7 @@ def _build_llm_client() -> OpenAICompatibleJSONClient | None:
     settings = get_settings()
     provider = settings.llm_provider.strip().lower()
 
-    if provider == "openai":
+    def build_openai() -> OpenAICompatibleJSONClient | None:
         model = settings.llm_model or settings.openai_model
         api_key = settings.llm_api_key or settings.openai_api_key
         if not api_key:
@@ -29,7 +29,7 @@ def _build_llm_client() -> OpenAICompatibleJSONClient | None:
         base_url = settings.llm_base_url
         return OpenAICompatibleJSONClient(model=model, api_key=api_key, base_url=base_url)
 
-    if provider == "openrouter":
+    def build_openrouter() -> OpenAICompatibleJSONClient | None:
         model = settings.llm_model or settings.openrouter_model
         api_key = settings.llm_api_key or settings.openrouter_api_key
         if not api_key:
@@ -37,12 +37,24 @@ def _build_llm_client() -> OpenAICompatibleJSONClient | None:
         base_url = settings.llm_base_url or settings.openrouter_base_url
         return OpenAICompatibleJSONClient(model=model, api_key=api_key, base_url=base_url)
 
-    if provider == "ollama":
+    def build_ollama() -> OpenAICompatibleJSONClient:
         model = settings.llm_model or settings.ollama_model
         base_url = settings.llm_base_url or settings.ollama_base_url
         return OpenAICompatibleJSONClient(model=model, api_key=settings.llm_api_key, base_url=base_url)
 
-    return None
+    if provider == "openai":
+        return build_openai() or build_openrouter()
+
+    if provider == "openrouter":
+        return build_openrouter() or build_openai()
+
+    if provider == "ollama":
+        return build_ollama()
+
+    if provider == "auto":
+        return build_openai() or build_openrouter() or build_ollama()
+
+    return build_openai() or build_openrouter()
 
 
 @asynccontextmanager
