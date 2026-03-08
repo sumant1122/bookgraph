@@ -158,3 +158,13 @@ flowchart LR
 2. Keep business logic in services/agents, not route handlers.
 3. Add tests for behavior changes.
 4. Open a PR with sample requests/responses for new APIs.
+
+## Future Enhancements
+
+Planned graph node types beyond books:
+
+- `Book`
+- `Paper`
+- `YouTubeVideo`
+- `Podcast`
+- `Note`
