@@ -77,7 +77,9 @@ class BookService:
                 source=relationship.source,
                 relation=relationship.relation,
                 target=relationship.target,
+                confidence=relationship.confidence,
+                reason=relationship.reason,
+                method=relationship.method,
             )
             created += 1
         return created
-

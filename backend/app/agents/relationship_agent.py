@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.agents.llm_client import LLMClient, LLMError
 
@@ -9,7 +10,22 @@ ALLOWED_RELATIONSHIPS = {
     "INFLUENCED_BY",
     "CONTRADICTS",
     "EXPANDS",
-    "BELONGS_TO_FIELD",
+    "BELONGS_TO",
+}
+
+RELATION_ALIASES = {
+    "RELATES_TO": "RELATED_TO",
+    "RELATED": "RELATED_TO",
+    "ASSOCIATED_WITH": "RELATED_TO",
+    "DISCUSSES": "RELATED_TO",
+    "COVERS": "RELATED_TO",
+    "INSPIRED_BY": "INFLUENCED_BY",
+    "INSPIRES": "INFLUENCED_BY",
+    "DERIVED_FROM": "INFLUENCED_BY",
+    "BUILDS_ON": "EXPANDS",
+    "ELABORATES_ON": "EXPANDS",
+    "EXTENDS": "EXPANDS",
+    "BELONGS_TO_FIELD": "BELONGS_TO",
 }
 
 
@@ -18,6 +34,9 @@ class RelationshipResult:
     source: str
     relation: str
     target: str
+    confidence: float | None = None
+    reason: str | None = None
+    method: str = "heuristic"
 
 
 class RelationshipAgent:
@@ -39,8 +58,10 @@ class RelationshipAgent:
 
         system_prompt = (
             "Determine if there is a meaningful intellectual relationship between two books. "
-            "Return strict JSON with keys: source, relation, target. "
-            "Allowed relations: RELATED_TO, INFLUENCED_BY, CONTRADICTS, EXPANDS, BELONGS_TO_FIELD. "
+            "Return strict JSON with keys: source, relation, target, confidence, reason. "
+            "Allowed canonical relations: RELATED_TO, INFLUENCED_BY, CONTRADICTS, EXPANDS, BELONGS_TO_FIELD. "
+            "Natural-language relations like 'discusses' or 'inspired by' are valid inputs, "
+            "but you must map them to canonical relations. "
             "If no relationship exists, return relation as NONE."
         )
         user_prompt = (
@@ -51,11 +72,19 @@ class RelationshipAgent:
 
         try:
             payload = self._llm_client.generate_json(system_prompt=system_prompt, user_prompt=user_prompt)
-            relation = str(payload.get("relation", "")).strip().upper()
-            if relation not in ALLOWED_RELATIONSHIPS:
+            relation = self._normalize_relation(payload)
+            if not relation:
                 return None
-            mapped_relation = "BELONGS_TO" if relation == "BELONGS_TO_FIELD" else relation
-            return RelationshipResult(source=source, relation=mapped_relation, target=target)
+            confidence = self._parse_confidence(payload.get("confidence"))
+            reason = str(payload.get("reason") or "").strip()[:240] or None
+            return RelationshipResult(
+                source=source,
+                relation=relation,
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                method="llm",
+            )
         except LLMError:
             return self._heuristic_relationship(source_book, target_book)
 
@@ -70,12 +99,54 @@ class RelationshipAgent:
         target_subjects = {str(s).lower() for s in (target_book.get("subjects") or [])}
         overlap = source_subjects.intersection(target_subjects)
         if overlap:
-            return RelationshipResult(source=source, relation="RELATED_TO", target=target)
+            reason = f"Shared subjects: {', '.join(sorted(overlap)[:3])}"
+            return RelationshipResult(
+                source=source,
+                relation="RELATED_TO",
+                target=target,
+                confidence=0.55,
+                reason=reason,
+                method="heuristic",
+            )
 
         source_desc = str(source_book.get("description") or "").lower()
         target_desc = str(target_book.get("description") or "").lower()
         if source_desc and target_desc and source_desc[:80] in target_desc:
-            return RelationshipResult(source=source, relation="INFLUENCED_BY", target=target)
+            return RelationshipResult(
+                source=source,
+                relation="INFLUENCED_BY",
+                target=target,
+                confidence=0.5,
+                reason="Description overlap suggests influence.",
+                method="heuristic",
+            )
 
         return None
 
+    def _normalize_relation(self, payload: dict[str, Any]) -> str | None:
+        raw_relation = str(payload.get("relation") or payload.get("relationship") or "").strip()
+        normalized = raw_relation.upper().replace("-", "_").replace(" ", "_")
+        if not normalized or normalized == "NONE":
+            return None
+        if normalized in RELATION_ALIASES:
+            normalized = RELATION_ALIASES[normalized]
+        if normalized in ALLOWED_RELATIONSHIPS:
+            return normalized
+
+        if "INSPIRED" in normalized or "INFLUENC" in normalized:
+            return "INFLUENCED_BY"
+        if "DISCUSS" in normalized or "RELAT" in normalized or "ASSOCIAT" in normalized:
+            return "RELATED_TO"
+        if "BUILD" in normalized or "EXTEND" in normalized or "EXPAND" in normalized:
+            return "EXPANDS"
+        if "CONTRADICT" in normalized or "OPPOS" in normalized:
+            return "CONTRADICTS"
+        return None
+
+    def _parse_confidence(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return round(max(0.0, min(1.0, float(value))), 3)
+        except (TypeError, ValueError):
+            return None

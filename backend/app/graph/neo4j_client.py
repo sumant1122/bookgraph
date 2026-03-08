@@ -83,7 +83,15 @@ class GraphRepository:
             results = session.run(query, exclude_title=exclude_title, limit=limit)
             return [record.data() for record in results]
 
-    def add_book_relationship(self, source: str, relation: str, target: str) -> None:
+    def add_book_relationship(
+        self,
+        source: str,
+        relation: str,
+        target: str,
+        confidence: float | None = None,
+        reason: str | None = None,
+        method: str | None = None,
+    ) -> None:
         if relation == "BELONGS_TO_FIELD":
             relation = "BELONGS_TO"
         if relation not in {"RELATED_TO", "INFLUENCED_BY", "CONTRADICTS", "EXPANDS", "BELONGS_TO"}:
@@ -92,10 +100,22 @@ class GraphRepository:
         query = f"""
         MATCH (source:Book {{title: $source}}), (target:Book {{title: $target}})
         MERGE (source)-[r:{relation}]->(target)
+        ON CREATE SET r.created_at = datetime()
+        SET r.last_seen_at = datetime(),
+            r.confidence = CASE WHEN $confidence IS NULL THEN r.confidence ELSE $confidence END,
+            r.reason = CASE WHEN $reason IS NULL OR $reason = '' THEN r.reason ELSE $reason END,
+            r.method = CASE WHEN $method IS NULL OR $method = '' THEN r.method ELSE $method END
         RETURN type(r) AS relation
         """
         with self._driver.session() as session:
-            session.run(query, source=source, target=target).consume()
+            session.run(
+                query,
+                source=source,
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                method=method,
+            ).consume()
 
     def get_graph(self) -> dict[str, list[dict[str, Any]]]:
         nodes_query = """
@@ -106,7 +126,7 @@ class GraphRepository:
         edges_query = """
         MATCH (a)-[r]->(b)
         WHERE NOT a:InsightSnapshot AND NOT b:InsightSnapshot
-        RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type
+        RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type, properties(r) AS props
         """
         with self._driver.session() as session:
             nodes = [
@@ -124,6 +144,7 @@ class GraphRepository:
                     "source": row["source"],
                     "target": row["target"],
                     "type": row["type"],
+                    "properties": self._to_json_safe(row["props"]),
                 }
                 for row in session.run(edges_query).data()
             ]
