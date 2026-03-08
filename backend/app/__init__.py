@@ -1,0 +1,2 @@
+"""BookGraph backend application package."""
+
