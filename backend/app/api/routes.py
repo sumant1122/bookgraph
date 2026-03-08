@@ -46,8 +46,5 @@ async def graph_snapshot(repo: GraphRepository = Depends(get_graph_repo)) -> Gra
 
 @router.get("/insights", response_model=InsightResponse)
 async def insights(engine: GraphInsightEngine = Depends(get_insight_engine)) -> InsightResponse:
-    return InsightResponse(
-        central_books=engine.get_central_books(),
-        clusters=engine.detect_clusters(),
-        missing_topics=engine.detect_missing_topics(),
-    )
+    bundle = engine.build_insight_bundle()
+    return InsightResponse(**bundle)

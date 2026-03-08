@@ -27,3 +27,7 @@ class InsightResponse(BaseModel):
     central_books: dict
     clusters: dict
     missing_topics: dict
+    graph_stats: dict = Field(default_factory=dict)
+    coverage: dict = Field(default_factory=dict)
+    recommendations: list[str] = Field(default_factory=list)
+    narrative: dict = Field(default_factory=dict)

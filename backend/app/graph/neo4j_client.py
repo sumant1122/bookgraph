@@ -145,7 +145,12 @@ class GraphRepository:
         fallback_query = """
         MATCH (b:Book)
         OPTIONAL MATCH (b)-[r]-(:Book)
-        RETURN b.title AS title, count(r) AS score
+        WITH b, count(r) AS bookLinks
+        OPTIONAL MATCH (b)-[:MENTIONS]->(c:Concept)
+        WITH b, bookLinks, count(DISTINCT c) AS conceptLinks
+        OPTIONAL MATCH (b)-[:BELONGS_TO]->(f:Field)
+        WITH b, bookLinks, conceptLinks, count(DISTINCT f) AS fieldLinks
+        RETURN b.title AS title, (bookLinks * 2.0 + conceptLinks * 1.0 + fieldLinks * 0.8) AS score
         ORDER BY score DESC
         LIMIT $limit
         """
@@ -197,3 +202,73 @@ class GraphRepository:
         """
         with self._driver.session() as session:
             return session.run(query, threshold=threshold).data()
+
+    def get_graph_stats(self) -> dict[str, Any]:
+        query = """
+        MATCH (b:Book)
+        WITH count(DISTINCT b) AS books
+        MATCH (a:Author)
+        WITH books, count(DISTINCT a) AS authors
+        MATCH (c:Concept)
+        WITH books, authors, count(DISTINCT c) AS concepts
+        MATCH (f:Field)
+        WITH books, authors, concepts, count(DISTINCT f) AS fields
+        OPTIONAL MATCH (:Book)-[r]->(:Book)
+        WITH books, authors, concepts, fields, count(DISTINCT r) AS bookEdges
+        RETURN books, authors, concepts, fields, bookEdges
+        """
+        with self._driver.session() as session:
+            row = session.run(query).single()
+            if not row:
+                return {
+                    "books": 0,
+                    "authors": 0,
+                    "concepts": 0,
+                    "fields": 0,
+                    "book_edges": 0,
+                    "book_relationship_density": 0.0,
+                }
+            books = int(row["books"] or 0)
+            edges = int(row["bookEdges"] or 0)
+            max_directed_edges = max(1, books * max(books - 1, 1))
+            density = float(edges / max_directed_edges) if books > 1 else 0.0
+            return {
+                "books": books,
+                "authors": int(row["authors"] or 0),
+                "concepts": int(row["concepts"] or 0),
+                "fields": int(row["fields"] or 0),
+                "book_edges": edges,
+                "book_relationship_density": round(density, 4),
+            }
+
+    def get_field_coverage(self, limit: int = 10) -> list[dict[str, Any]]:
+        query = """
+        MATCH (f:Field)
+        OPTIONAL MATCH (b:Book)-[:BELONGS_TO]->(f)
+        RETURN f.name AS field, count(DISTINCT b) AS bookCount
+        ORDER BY bookCount DESC, field ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def get_top_concepts(self, limit: int = 10) -> list[dict[str, Any]]:
+        query = """
+        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)
+        RETURN c.name AS concept, count(DISTINCT b) AS bookCount
+        ORDER BY bookCount DESC, concept ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def get_unlinked_books(self, limit: int = 10) -> list[dict[str, Any]]:
+        query = """
+        MATCH (b:Book)
+        WHERE NOT (b)-[:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
+        RETURN b.title AS title, b.publish_year AS publish_year
+        ORDER BY coalesce(b.publish_year, 9999) ASC, b.title ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.concept_agent import ConceptAgent
+from app.agents.insight_agent import InsightAgent
 from app.agents.llm_client import OpenAICompatibleJSONClient
 from app.agents.relationship_agent import RelationshipAgent
 from app.api.routes import router
@@ -56,6 +57,7 @@ async def lifespan(app: FastAPI):
     llm_client = _build_llm_client()
     concept_agent = ConceptAgent(llm_client=llm_client)
     relationship_agent = RelationshipAgent(llm_client=llm_client)
+    insight_agent = InsightAgent(llm_client=llm_client)
     openlibrary_client = OpenLibraryClient(settings.openlibrary_base_url)
     app.state.graph_repo = graph_repo
     app.state.book_service = BookService(
@@ -65,7 +67,7 @@ async def lifespan(app: FastAPI):
         relationship_agent=relationship_agent,
         relationship_scan_limit=settings.relationship_scan_limit,
     )
-    app.state.insight_engine = GraphInsightEngine(graph_repo)
+    app.state.insight_engine = GraphInsightEngine(graph_repo, insight_agent=insight_agent)
     try:
         yield
     finally:
