@@ -120,12 +120,15 @@ class GraphRepository:
     def get_graph(self) -> dict[str, list[dict[str, Any]]]:
         nodes_query = """
         MATCH (n)
-        WHERE NOT n:InsightSnapshot
+        WHERE NOT n:InsightSnapshot AND NOT n:GraphInsight
         RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props
         """
         edges_query = """
         MATCH (a)-[r]->(b)
-        WHERE NOT a:InsightSnapshot AND NOT b:InsightSnapshot
+        WHERE NOT a:InsightSnapshot
+          AND NOT b:InsightSnapshot
+          AND NOT a:GraphInsight
+          AND NOT b:GraphInsight
         RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type, properties(r) AS props
         """
         with self._driver.session() as session:
@@ -510,6 +513,118 @@ class GraphRepository:
                 book_relationship_density=float(stats.get("book_relationship_density", 0.0)),
                 overall_score=int(overall_score),
             ).consume()
+
+    def get_cross_field_concepts(self, limit: int = 10) -> list[dict[str, Any]]:
+        query = """
+        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)-[:BELONGS_TO]->(f:Field)
+        WITH c, collect(DISTINCT f.name) AS fields, count(DISTINCT f) AS fieldCount
+        WHERE fieldCount >= 2
+        RETURN c.name AS concept, fields, fieldCount
+        ORDER BY fieldCount DESC, concept ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def save_graph_insight(
+        self,
+        insight_type: str,
+        title: str,
+        description: str,
+        nodes: list[str],
+        signature: str,
+    ) -> dict[str, Any]:
+        query = """
+        MERGE (g:GraphInsight {signature: $signature})
+        ON CREATE SET g.id = randomUUID(), g.created_at = datetime()
+        SET g.type = $insight_type,
+            g.title = $title,
+            g.description = $description,
+            g.nodes = $nodes,
+            g.updated_at = datetime()
+        RETURN g.id AS id,
+               g.type AS type,
+               g.title AS title,
+               g.description AS description,
+               g.nodes AS nodes,
+               g.created_at AS created_at
+        """
+        with self._driver.session() as session:
+            row = session.run(
+                query,
+                signature=signature,
+                insight_type=insight_type,
+                title=title,
+                description=description,
+                nodes=nodes,
+            ).single()
+            if not row:
+                return {
+                    "id": "",
+                    "type": insight_type,
+                    "title": title,
+                    "description": description,
+                    "nodes": nodes,
+                    "created_at": "",
+                }
+            return {
+                "id": str(row.get("id") or ""),
+                "type": str(row.get("type") or insight_type),
+                "title": str(row.get("title") or title),
+                "description": str(row.get("description") or description),
+                "nodes": [str(node) for node in (row.get("nodes") or [])],
+                "created_at": str(row.get("created_at") or ""),
+            }
+
+    def list_graph_insights(self, limit: int = 30) -> list[dict[str, Any]]:
+        query = """
+        MATCH (g:GraphInsight)
+        RETURN g.id AS id,
+               g.type AS type,
+               g.title AS title,
+               g.description AS description,
+               g.nodes AS nodes,
+               g.created_at AS created_at
+        ORDER BY g.created_at DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(query, limit=limit).data()
+            return [
+                {
+                    "id": str(row.get("id") or ""),
+                    "type": str(row.get("type") or ""),
+                    "title": str(row.get("title") or ""),
+                    "description": str(row.get("description") or ""),
+                    "nodes": [str(node) for node in (row.get("nodes") or [])],
+                    "created_at": str(row.get("created_at") or ""),
+                }
+                for row in rows
+            ]
+
+    def get_graph_insight(self, insight_id: str) -> dict[str, Any] | None:
+        query = """
+        MATCH (g:GraphInsight {id: $insight_id})
+        RETURN g.id AS id,
+               g.type AS type,
+               g.title AS title,
+               g.description AS description,
+               g.nodes AS nodes,
+               g.created_at AS created_at
+        LIMIT 1
+        """
+        with self._driver.session() as session:
+            row = session.run(query, insight_id=insight_id).single()
+            if not row:
+                return None
+            return {
+                "id": str(row.get("id") or ""),
+                "type": str(row.get("type") or ""),
+                "title": str(row.get("title") or ""),
+                "description": str(row.get("description") or ""),
+                "nodes": [str(node) for node in (row.get("nodes") or [])],
+                "created_at": str(row.get("created_at") or ""),
+            }
 
     def get_chat_subgraph(
         self,

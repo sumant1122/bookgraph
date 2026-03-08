@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_book_service, get_chat_service, get_graph_repo, get_insight_engine
-from app.api.schemas import AddBookRequest, BookResponse, ChatRequest, ChatResponse, GraphResponse, InsightResponse
+from app.api.schemas import (
+    AddBookRequest,
+    BookResponse,
+    ChatRequest,
+    ChatResponse,
+    DiscoveriesResponse,
+    DiscoveryItem,
+    GraphResponse,
+    InsightResponse,
+    KnowledgeGapsResponse,
+    ReadingPathsResponse,
+)
 from app.graph.neo4j_client import GraphRepository
 from app.ingestion.openlibrary import OpenLibraryNotFoundError
 from app.insights.graph_insights import GraphInsightEngine
@@ -49,6 +60,36 @@ async def graph_snapshot(repo: GraphRepository = Depends(get_graph_repo)) -> Gra
 async def insights(engine: GraphInsightEngine = Depends(get_insight_engine)) -> InsightResponse:
     bundle = engine.build_insight_bundle()
     return InsightResponse(**bundle)
+
+
+@router.get("/discoveries", response_model=DiscoveriesResponse)
+async def discoveries(
+    limit: int = Query(default=30, ge=1, le=100),
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> DiscoveriesResponse:
+    rows = repo.list_graph_insights(limit=limit)
+    return DiscoveriesResponse(discoveries=[DiscoveryItem(**row) for row in rows])
+
+
+@router.get("/discoveries/{insight_id}", response_model=DiscoveryItem)
+async def discovery_by_id(
+    insight_id: str,
+    repo: GraphRepository = Depends(get_graph_repo),
+) -> DiscoveryItem:
+    row = repo.get_graph_insight(insight_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery not found.")
+    return DiscoveryItem(**row)
+
+
+@router.get("/reading-paths", response_model=ReadingPathsResponse)
+async def reading_paths() -> ReadingPathsResponse:
+    return ReadingPathsResponse(paths=[])
+
+
+@router.get("/knowledge-gaps", response_model=KnowledgeGapsResponse)
+async def knowledge_gaps() -> KnowledgeGapsResponse:
+    return KnowledgeGapsResponse(gaps=[])
 
 
 @router.post("/chat", response_model=ChatResponse)

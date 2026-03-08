@@ -40,6 +40,38 @@ class InsightResponse(BaseModel):
     freshness: dict = Field(default_factory=dict)
 
 
+class DiscoveryItem(BaseModel):
+    id: str
+    type: str
+    title: str
+    description: str
+    nodes: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class DiscoveriesResponse(BaseModel):
+    discoveries: list[DiscoveryItem] = Field(default_factory=list)
+
+
+class ReadingPathItem(BaseModel):
+    concept: str
+    books: list[str] = Field(default_factory=list)
+    explanation: str = ""
+
+
+class ReadingPathsResponse(BaseModel):
+    paths: list[ReadingPathItem] = Field(default_factory=list)
+
+
+class KnowledgeGapItem(BaseModel):
+    gap: str
+    reason: str = ""
+
+
+class KnowledgeGapsResponse(BaseModel):
+    gaps: list[KnowledgeGapItem] = Field(default_factory=list)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     scope: str = Field(default="auto", pattern="^(auto|book|author|concept|field)$")
