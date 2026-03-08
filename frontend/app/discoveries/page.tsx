@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
 
 type Discovery = {
   id: string;
@@ -17,9 +18,8 @@ type DiscoveriesPayload = {
   discoveries: Discovery[];
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
 export default function DiscoveriesPage() {
+  const apiBase = resolveApiBaseUrl();
   const [discoveries, setDiscoveries] = useState<Discovery[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,20 +29,20 @@ export default function DiscoveriesPage() {
     const load = async () => {
       try {
         setError(null);
-        const response = await fetch(`${API_BASE}/discoveries`);
+        const response = await fetch(`${apiBase}/discoveries`);
         const payload = (await response.json()) as DiscoveriesPayload;
         if (!response.ok) {
           throw new Error("Failed to load discoveries.");
         }
         setDiscoveries(payload.discoveries || []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load discoveries.");
+        setError(formatFetchError(err, apiBase, "Failed to load discoveries."));
       } finally {
         setLoading(false);
       }
     };
     void load();
-  }, []);
+  }, [apiBase]);
 
   return (
     <div className="card">

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
+import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
 
 type ChatResponse = {
   answer: string;
@@ -15,9 +16,8 @@ type ChatResponse = {
   fallback_reason?: string | null;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
 export default function ChatPage() {
+  const apiBase = resolveApiBaseUrl();
   const [question, setQuestion] = useState("");
   const [scope, setScope] = useState("auto");
   const [k, setK] = useState(20);
@@ -31,7 +31,7 @@ export default function ChatPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/chat`, {
+      const response = await fetch(`${apiBase}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, scope, k })
@@ -42,7 +42,7 @@ export default function ChatPage() {
       }
       setResult(payload);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unexpected error";
+      const message = formatFetchError(err, apiBase, "Unexpected error");
       setError(message);
     } finally {
       setLoading(false);

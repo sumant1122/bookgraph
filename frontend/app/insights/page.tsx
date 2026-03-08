@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
 
 type InsightsResponse = {
   central_books: {
@@ -77,27 +78,26 @@ type InsightsResponse = {
   };
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
 export default function InsightsPage() {
+  const apiBase = resolveApiBaseUrl();
   const [data, setData] = useState<InsightsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const response = await fetch(`${API_BASE}/insights`);
+        const response = await fetch(`${apiBase}/insights`);
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload.detail ?? "Failed to load insights.");
         }
         setData(payload as InsightsResponse);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load insights.");
+        setError(formatFetchError(err, apiBase, "Failed to load insights."));
       }
     };
     void load();
-  }, []);
+  }, [apiBase]);
 
   if (error) {
     return <div className="card">Insights error: {error}</div>;

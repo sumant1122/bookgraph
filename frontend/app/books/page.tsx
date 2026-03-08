@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
+import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
 
 type BookResponse = {
   title: string;
@@ -20,7 +21,6 @@ type UiError = {
   hint?: string;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const INGEST_STEPS = [
   "Searching catalog metadata",
   "Extracting concepts and fields",
@@ -29,6 +29,7 @@ const INGEST_STEPS = [
 ];
 
 export default function BooksPage() {
+  const apiBase = resolveApiBaseUrl();
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BookResponse | null>(null);
@@ -52,7 +53,7 @@ export default function BooksPage() {
     setResult(null);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/books`, {
+      const response = await fetch(`${apiBase}/books`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title })
@@ -72,12 +73,11 @@ export default function BooksPage() {
       setTitle("");
     } catch (err: unknown) {
       const status = typeof err === "object" && err !== null && "status" in err ? Number((err as { status: number }).status) : 0;
-      const detail =
+      const apiOrRuntimeDetail =
         typeof err === "object" && err !== null && "detail" in err
           ? String((err as { detail: string }).detail)
-          : err instanceof Error
-            ? err.message
-            : "Unexpected error";
+          : formatFetchError(err, apiBase, "Unexpected error");
+      const detail = apiOrRuntimeDetail;
 
       if (status === 404) {
         setError({
@@ -94,7 +94,8 @@ export default function BooksPage() {
       } else {
         setError({
           title: "Request Failed",
-          detail
+          detail,
+          hint: `If this is a network error, verify backend is running at ${apiBase}.`
         });
       }
     } finally {

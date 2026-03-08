@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import ReactFlow, { Background, Controls, MiniMap, Node, Edge } from "reactflow";
 import "reactflow/dist/style.css";
+import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
 
 type GraphPayload = {
   nodes: Array<{
@@ -42,8 +43,6 @@ type NodeDetailPayload = {
   }>;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
 function nodeColor(type: string): string {
   if (type === "book") return "#0e7a6d";
   if (type === "concept") return "#ec6a3c";
@@ -67,6 +66,7 @@ export default function GraphCanvas() {
   const insightId = searchParams.get("insight");
   const startNodeId = searchParams.get("node_id");
   const highlightParam = searchParams.get("highlight");
+  const apiBase = resolveApiBaseUrl();
 
   const [query, setQuery] = useState("");
   const [nodeTypeFilter, setNodeTypeFilter] = useState("all");
@@ -98,7 +98,7 @@ export default function GraphCanvas() {
         return;
       }
       try {
-        const response = await fetch(`${API_BASE}/discoveries/${encodeURIComponent(insightId)}`);
+        const response = await fetch(`${apiBase}/discoveries/${encodeURIComponent(insightId)}`);
         if (!response.ok) {
           return;
         }
@@ -112,7 +112,7 @@ export default function GraphCanvas() {
       }
     };
     void loadHighlight();
-  }, [insightId, highlightParam]);
+  }, [apiBase, insightId, highlightParam]);
 
   const applyFocusGraph = (payload: GraphPayload, merge: boolean) => {
     setNodes((current) => {
@@ -166,7 +166,7 @@ export default function GraphCanvas() {
       setLoading(true);
       setError(null);
       const response = await fetch(
-        `${API_BASE}/graph/focus?node_id=${encodeURIComponent(nodeId)}&depth=${depth}&limit=140`
+        `${apiBase}/graph/focus?node_id=${encodeURIComponent(nodeId)}&depth=${depth}&limit=140`
       );
       const payload = (await response.json()) as GraphPayload;
       if (!response.ok) {
@@ -176,7 +176,7 @@ export default function GraphCanvas() {
       setSelectedNodeId(nodeId);
       void loadNodeDetails(nodeId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load focused graph.");
+      setError(formatFetchError(err, apiBase, "Failed to load focused graph."));
     } finally {
       setLoading(false);
     }
@@ -185,7 +185,7 @@ export default function GraphCanvas() {
   const loadNodeDetails = async (nodeId: string) => {
     try {
       setDetailLoading(true);
-      const response = await fetch(`${API_BASE}/graph/nodes/${encodeURIComponent(nodeId)}`);
+      const response = await fetch(`${apiBase}/graph/nodes/${encodeURIComponent(nodeId)}`);
       if (!response.ok) {
         setNodeDetail(null);
         return;
@@ -203,14 +203,14 @@ export default function GraphCanvas() {
     setError(null);
     try {
       const typeQuery = nodeTypeFilter !== "all" ? `&type=${encodeURIComponent(nodeTypeFilter)}` : "";
-      const response = await fetch(`${API_BASE}/graph/search?q=${encodeURIComponent(query)}${typeQuery}&limit=25`);
+      const response = await fetch(`${apiBase}/graph/search?q=${encodeURIComponent(query)}${typeQuery}&limit=25`);
       const payload = (await response.json()) as GraphSearchPayload;
       if (!response.ok) {
         throw new Error("Search failed.");
       }
       setSearchResults(payload.nodes || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed.");
+      setError(formatFetchError(err, apiBase, "Search failed."));
     } finally {
       setSearchLoading(false);
     }
@@ -219,12 +219,12 @@ export default function GraphCanvas() {
   useEffect(() => {
     if (!startNodeId) return;
     void loadFocus(startNodeId, 1, false);
-  }, [startNodeId]);
+  }, [apiBase, startNodeId]);
 
   useEffect(() => {
     if (!insightId || startNodeId) return;
     const loadFromInsight = async () => {
-      const response = await fetch(`${API_BASE}/discoveries/${encodeURIComponent(insightId)}`);
+      const response = await fetch(`${apiBase}/discoveries/${encodeURIComponent(insightId)}`);
       if (!response.ok) return;
       const payload = (await response.json()) as { node_ids?: string[] };
       const seed = payload.node_ids?.[0];
@@ -233,7 +233,7 @@ export default function GraphCanvas() {
       }
     };
     void loadFromInsight();
-  }, [insightId, startNodeId]);
+  }, [apiBase, insightId, startNodeId]);
 
   useEffect(() => {
     setNodes((current) =>
