@@ -229,9 +229,11 @@ class GraphRepository:
         with self._driver.session() as session:
             rows = session.run(
                 cypher,
-                query=safe_query,
-                label=label,
-                limit=max(1, min(100, limit)),
+                parameters={
+                    "query": safe_query,
+                    "label": label,
+                    "limit": max(1, min(100, limit)),
+                },
             ).data()
             return [
                 {
