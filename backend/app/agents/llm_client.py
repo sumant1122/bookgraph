@@ -32,6 +32,7 @@ class OpenAICompatibleJSONClient:
         timeout_seconds: float = 30.0,
     ) -> None:
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self._chat_endpoint = self._resolve_chat_endpoint(self._base_url)
         self._api_key = api_key
         self.provider = provider
         self._headers = default_headers or {}
@@ -52,7 +53,7 @@ class OpenAICompatibleJSONClient:
         }
         try:
             response = httpx.post(
-                f"{self._base_url}/chat/completions",
+                self._chat_endpoint,
                 headers=headers,
                 json=payload,
                 timeout=self._timeout_seconds,
@@ -73,3 +74,9 @@ class OpenAICompatibleJSONClient:
             return parsed
         except Exception as exc:  # noqa: BLE001
             raise LLMError(f"Failed to parse model JSON output: {content}") from exc
+
+    def _resolve_chat_endpoint(self, base_url: str) -> str:
+        normalized = base_url.rstrip("/")
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        return f"{normalized}/chat/completions"
