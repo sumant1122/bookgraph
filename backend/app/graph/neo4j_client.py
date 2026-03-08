@@ -273,6 +273,205 @@ class GraphRepository:
         with self._driver.session() as session:
             return session.run(query, limit=limit).data()
 
+    def get_book_relationship_edges(self, limit: int = 30) -> list[dict[str, Any]]:
+        query = """
+        MATCH (a:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(b:Book)
+        RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type
+        ORDER BY type(r) ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def get_book_nodes_by_titles(self, titles: list[str]) -> list[dict[str, Any]]:
+        if not titles:
+            return []
+        query = """
+        UNWIND $titles AS title
+        MATCH (b:Book {title: title})
+        RETURN elementId(b) AS id, b.title AS label, 'book' AS type
+        """
+        with self._driver.session() as session:
+            return session.run(query, titles=titles).data()
+
+    def get_field_nodes_by_names(self, fields: list[str]) -> list[dict[str, Any]]:
+        if not fields:
+            return []
+        query = """
+        UNWIND $fields AS field_name
+        MATCH (f:Field {name: field_name})
+        RETURN elementId(f) AS id, f.name AS label, 'field' AS type
+        """
+        with self._driver.session() as session:
+            return session.run(query, fields=fields).data()
+
+    def get_field_reading_paths(self, limit_fields: int = 4, path_len: int = 4) -> list[dict[str, Any]]:
+        query = """
+        MATCH (f:Field)<-[:BELONGS_TO]-(b:Book)
+        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
+        WITH f, b, count(DISTINCT r) AS relScore
+        ORDER BY f.name ASC, relScore DESC, coalesce(b.publish_year, 9999) ASC
+        WITH f, collect({
+            title: b.title,
+            publish_year: b.publish_year,
+            score: relScore
+        })[..$path_len] AS path
+        WHERE size(path) >= 2
+        RETURN f.name AS field, path
+        ORDER BY size(path) DESC, field ASC
+        LIMIT $limit_fields
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit_fields=limit_fields, path_len=path_len).data()
+
+    def get_overlap_contradiction_summary(self) -> dict[str, Any]:
+        query = """
+        MATCH (:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(:Book)
+        RETURN
+            count(CASE WHEN type(r) IN ['RELATED_TO', 'INFLUENCED_BY', 'EXPANDS'] THEN 1 END) AS overlapCount,
+            count(CASE WHEN type(r) = 'CONTRADICTS' THEN 1 END) AS contradictionCount
+        """
+        sample_query = """
+        MATCH (a:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(b:Book)
+        RETURN a.title AS source, type(r) AS relation, b.title AS target
+        ORDER BY CASE type(r) WHEN 'CONTRADICTS' THEN 0 ELSE 1 END ASC, a.title ASC
+        LIMIT 12
+        """
+        with self._driver.session() as session:
+            row = session.run(query).single()
+            samples = session.run(sample_query).data()
+            return {
+                "overlap_count": int(row["overlapCount"] or 0) if row else 0,
+                "contradiction_count": int(row["contradictionCount"] or 0) if row else 0,
+                "samples": samples,
+            }
+
+    def detect_sparse_bridges(self, limit: int = 8) -> list[dict[str, Any]]:
+        query = """
+        MATCH (f1:Field)<-[:BELONGS_TO]-(b1:Book)
+        MATCH (f2:Field)<-[:BELONGS_TO]-(b2:Book)
+        WHERE f1.name < f2.name
+        WITH f1, f2, count(DISTINCT b1) AS booksA, count(DISTINCT b2) AS booksB
+        WHERE booksA > 0 AND booksB > 0
+        CALL {
+            WITH f1, f2
+            MATCH (x:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(y:Book)
+            WHERE (x)-[:BELONGS_TO]->(f1) AND (y)-[:BELONGS_TO]->(f2)
+            RETURN count(DISTINCT r) AS crossLinks
+        }
+        WITH f1, f2, booksA, booksB, crossLinks
+        WHERE crossLinks = 0
+        RETURN f1.name AS field_a, f2.name AS field_b, booksA AS books_a, booksB AS books_b
+        ORDER BY (booksA + booksB) DESC, field_a ASC, field_b ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def get_field_dashboards(self, limit: int = 5) -> list[dict[str, Any]]:
+        top_fields = self.get_field_coverage(limit=limit)
+        dashboards: list[dict[str, Any]] = []
+        with self._driver.session() as session:
+            for field in top_fields:
+                field_name = field["field"]
+                books_query = """
+                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)
+                OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
+                RETURN b.title AS title, b.publish_year AS publish_year, count(DISTINCT r) AS relationCount
+                ORDER BY relationCount DESC, coalesce(b.publish_year, 9999) ASC, title ASC
+                LIMIT 5
+                """
+                concepts_query = """
+                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)-[:MENTIONS]->(c:Concept)
+                RETURN c.name AS concept, count(DISTINCT b) AS bookCount
+                ORDER BY bookCount DESC, concept ASC
+                LIMIT 5
+                """
+                isolated_query = """
+                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)
+                WHERE NOT (b)-[:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
+                RETURN b.title AS title
+                ORDER BY title ASC
+                LIMIT 5
+                """
+                top_books = session.run(books_query, field_name=field_name).data()
+                top_concepts = session.run(concepts_query, field_name=field_name).data()
+                isolated_books = session.run(isolated_query, field_name=field_name).data()
+                unanswered_questions = [
+                    f"Which book can bridge '{field_name}' to adjacent fields?",
+                    f"Are there contradictory viewpoints within '{field_name}'?",
+                ]
+                dashboards.append(
+                    {
+                        "field": field_name,
+                        "book_count": field["bookCount"],
+                        "top_books": top_books,
+                        "top_concepts": top_concepts,
+                        "isolated_books": isolated_books,
+                        "unanswered_questions": unanswered_questions,
+                    }
+                )
+        return dashboards
+
+    def get_latest_insight_snapshots(self, limit: int = 2) -> list[dict[str, Any]]:
+        query = """
+        MATCH (s:InsightSnapshot)
+        RETURN s.created_at AS created_at,
+               s.books AS books,
+               s.authors AS authors,
+               s.concepts AS concepts,
+               s.fields AS fields,
+               s.book_edges AS book_edges,
+               s.book_relationship_density AS book_relationship_density,
+               s.overall_score AS overall_score
+        ORDER BY s.created_at DESC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            rows = session.run(query, limit=limit).data()
+            normalized = []
+            for row in rows:
+                created_at = row["created_at"]
+                normalized.append(
+                    {
+                        "created_at": str(created_at),
+                        "books": int(row.get("books") or 0),
+                        "authors": int(row.get("authors") or 0),
+                        "concepts": int(row.get("concepts") or 0),
+                        "fields": int(row.get("fields") or 0),
+                        "book_edges": int(row.get("book_edges") or 0),
+                        "book_relationship_density": float(row.get("book_relationship_density") or 0.0),
+                        "overall_score": int(row.get("overall_score") or 0),
+                    }
+                )
+            return normalized
+
+    def save_insight_snapshot(self, stats: dict[str, Any], overall_score: int) -> None:
+        query = """
+        CREATE (s:InsightSnapshot {
+            id: randomUUID(),
+            created_at: datetime(),
+            books: $books,
+            authors: $authors,
+            concepts: $concepts,
+            fields: $fields,
+            book_edges: $book_edges,
+            book_relationship_density: $book_relationship_density,
+            overall_score: $overall_score
+        })
+        """
+        with self._driver.session() as session:
+            session.run(
+                query,
+                books=int(stats.get("books", 0)),
+                authors=int(stats.get("authors", 0)),
+                concepts=int(stats.get("concepts", 0)),
+                fields=int(stats.get("fields", 0)),
+                book_edges=int(stats.get("book_edges", 0)),
+                book_relationship_density=float(stats.get("book_relationship_density", 0.0)),
+                overall_score=int(overall_score),
+            ).consume()
+
     def get_chat_subgraph(
         self,
         question: str,

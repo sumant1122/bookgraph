@@ -29,8 +29,15 @@ class InsightResponse(BaseModel):
     missing_topics: dict
     graph_stats: dict = Field(default_factory=dict)
     coverage: dict = Field(default_factory=dict)
-    recommendations: list[str] = Field(default_factory=list)
+    recommendations: list[dict] = Field(default_factory=list)
     narrative: dict = Field(default_factory=dict)
+    time_delta: dict = Field(default_factory=dict)
+    quality_scores: dict = Field(default_factory=dict)
+    reading_paths: list[dict] = Field(default_factory=list)
+    overlap_contradiction: dict = Field(default_factory=dict)
+    sparse_bridges: list[dict] = Field(default_factory=list)
+    field_dashboards: list[dict] = Field(default_factory=list)
+    freshness: dict = Field(default_factory=dict)
 
 
 class ChatRequest(BaseModel):
