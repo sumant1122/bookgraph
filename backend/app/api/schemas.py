@@ -3,11 +3,11 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
-class AddBookRequest(BaseModel):
+class AddItemRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
 
 
-class BookResponse(BaseModel):
+class ItemResponse(BaseModel):
     title: str
     author: str
     publish_year: int | None = None
@@ -36,23 +36,6 @@ class GraphNodeDetailResponse(BaseModel):
     neighbors: list[dict] = Field(default_factory=list)
 
 
-class InsightResponse(BaseModel):
-    central_books: dict
-    clusters: dict
-    missing_topics: dict
-    graph_stats: dict = Field(default_factory=dict)
-    coverage: dict = Field(default_factory=dict)
-    recommendations: list[dict] = Field(default_factory=list)
-    narrative: dict = Field(default_factory=dict)
-    time_delta: dict = Field(default_factory=dict)
-    quality_scores: dict = Field(default_factory=dict)
-    reading_paths: list[dict] = Field(default_factory=list)
-    overlap_contradiction: dict = Field(default_factory=dict)
-    sparse_bridges: list[dict] = Field(default_factory=list)
-    field_dashboards: list[dict] = Field(default_factory=list)
-    freshness: dict = Field(default_factory=dict)
-
-
 class DiscoveryItem(BaseModel):
     id: str
     type: str
@@ -69,7 +52,7 @@ class DiscoveriesResponse(BaseModel):
 
 class ReadingPathItem(BaseModel):
     concept: str
-    books: list[str] = Field(default_factory=list)
+    items: list[str] = Field(default_factory=list)
     explanation: str = ""
     created_at: str | None = None
 
@@ -81,7 +64,7 @@ class ReadingPathsResponse(BaseModel):
 class KnowledgeGapItem(BaseModel):
     gap: str
     reason: str = ""
-    candidate_books: list[str] = Field(default_factory=list)
+    candidate_items: list[str] = Field(default_factory=list)
     created_at: str | None = None
 
 
@@ -91,7 +74,7 @@ class KnowledgeGapsResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
-    scope: str = Field(default="auto", pattern="^(auto|book|author|concept|field)$")
+    scope: str = Field(default="auto", pattern="^(auto|book|paper|author|concept|field)$")
     k: int = Field(default=20, ge=5, le=100)
 
 
@@ -105,3 +88,4 @@ class ChatResponse(BaseModel):
     mode: str = "fallback"
     provider: str = "none"
     fallback_reason: str | None = None
+    cypher_query: str | None = None

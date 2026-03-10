@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend — lint & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install ruff pytest pytest-asyncio httpx
+        working-directory: .
+
+      - name: Lint (ruff)
+        run: ruff check backend/
+        working-directory: .
+
+      - name: Tests
+        run: pytest backend/tests/ -v --tb=short
+        working-directory: .
+        env:
+          # Use test values — no real Neo4j needed for unit tests
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USERNAME: neo4j
+          NEO4J_PASSWORD: test
+          MODEL_PROVIDER: "auto"
+
+  frontend:
+    name: Frontend — type-check & lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Type-check
+        run: npx tsc --noEmit
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
+        working-directory: frontend

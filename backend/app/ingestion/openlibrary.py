@@ -1,22 +1,10 @@
 from __future__ import annotations
-
-from dataclasses import dataclass
-
 import httpx
+from app.models import BookMetadata
 
 
 class OpenLibraryNotFoundError(Exception):
     """Raised when no matching title can be found."""
-
-
-@dataclass(slots=True)
-class BookMetadata:
-    title: str
-    author: str
-    publish_year: int | None
-    subjects: list[str]
-    description: str
-    openlibrary_key: str | None = None
 
 
 class OpenLibraryClient:
@@ -50,6 +38,7 @@ class OpenLibraryClient:
             description = " ".join(subjects[:5]) if subjects else ""
 
         return BookMetadata(
+            content_type="book",
             title=canonical_title,
             author=author,
             publish_year=publish_year,

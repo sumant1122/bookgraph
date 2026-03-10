@@ -41,13 +41,13 @@ class DiscoveryGraphRepository:
     def save_reading_path(
         self,
         concept: str,
-        books: list[str],
+        items: list[str],
         explanation: str,
         signature: str,
     ) -> dict[str, Any]:
         return self._root.save_reading_path(
             concept=concept,
-            books=books,
+            items=items,
             explanation=explanation,
             signature=signature,
         )
@@ -61,20 +61,20 @@ class DiscoveryGraphRepository:
     def detect_sparse_bridges(self, limit: int = 8, max_fields: int = 10) -> list[dict[str, Any]]:
         return self._root.detect_sparse_bridges(limit=limit, max_fields=max_fields)
 
-    def get_books_for_fields(self, fields: list[str], limit: int = 5) -> list[str]:
-        return self._root.get_books_for_fields(fields=fields, limit=limit)
+    def get_items_for_fields(self, fields: list[str], limit: int = 5) -> list[str]:
+        return self._root.get_items_for_fields(fields=fields, limit=limit)
 
     def save_knowledge_gap(
         self,
         gap: str,
         reason: str,
-        candidate_books: list[str],
+        candidate_items: list[str],
         signature: str,
     ) -> dict[str, Any]:
         return self._root.save_knowledge_gap(
             gap=gap,
             reason=reason,
-            candidate_books=candidate_books,
+            candidate_items=candidate_items,
             signature=signature,
         )
 

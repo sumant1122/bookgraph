@@ -87,7 +87,7 @@ class FakeGraphRepo:
         return [
             {
                 "concept": "Startup Strategy",
-                "books": ["The Innovator's Dilemma", "Zero to One", "The Lean Startup"],
+                "items": ["The Innovator's Dilemma", "Zero to One", "The Lean Startup"],
                 "explanation": "Progresses from disruption theory to execution frameworks.",
                 "created_at": "2026-03-08T00:00:00+00:00",
             }
@@ -98,7 +98,7 @@ class FakeGraphRepo:
             {
                 "gap": "Behavioral Economics",
                 "reason": "Startup books reference psychology but decision theory coverage is sparse.",
-                "candidate_books": ["Thinking, Fast and Slow", "Predictably Irrational"],
+                "candidate_items": ["Thinking, Fast and Slow", "Predictably Irrational"],
                 "created_at": "2026-03-08T00:00:00+00:00",
             }
         ]
@@ -136,11 +136,11 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["paths"][0]["concept"], "Startup Strategy")
-        self.assertEqual(payload["paths"][0]["books"][0], "The Innovator's Dilemma")
+        self.assertEqual(payload["paths"][0]["items"][0], "The Innovator's Dilemma")
 
     def test_knowledge_gaps_endpoint_returns_data(self) -> None:
         response = self.client.get("/knowledge-gaps")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["gaps"][0]["gap"], "Behavioral Economics")
-        self.assertEqual(payload["gaps"][0]["candidate_books"][0], "Thinking, Fast and Slow")
+        self.assertEqual(payload["gaps"][0]["candidate_items"][0], "Thinking, Fast and Slow")

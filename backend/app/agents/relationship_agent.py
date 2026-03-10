@@ -45,19 +45,19 @@ class RelationshipAgent:
 
     def determine_relationship(
         self,
-        source_book: dict[str, str | list[str] | int | None],
-        target_book: dict[str, str | list[str] | int | None],
+        source_item: dict[str, str | list[str] | int | None],
+        target_item: dict[str, str | list[str] | int | None],
     ) -> RelationshipResult | None:
-        source = str(source_book.get("title") or "").strip()
-        target = str(target_book.get("title") or "").strip()
+        source = str(source_item.get("title") or "").strip()
+        target = str(target_item.get("title") or "").strip()
         if not source or not target or source == target:
             return None
 
         if not self._llm_client:
-            return self._heuristic_relationship(source_book, target_book)
+            return self._heuristic_relationship(source_item, target_item)
 
         system_prompt = (
-            "Determine if there is a meaningful intellectual relationship between two books. "
+            "Determine if there is a meaningful intellectual relationship between two items. "
             "Return strict JSON with keys: source, relation, target, confidence, reason. "
             "Allowed canonical relations: RELATED_TO, INFLUENCED_BY, CONTRADICTS, EXPANDS, BELONGS_TO_FIELD. "
             "Natural-language relations like 'discusses' or 'inspired by' are valid inputs, "
@@ -65,8 +65,8 @@ class RelationshipAgent:
             "If no relationship exists, return relation as NONE."
         )
         user_prompt = (
-            f"Book A:\n{source_book}\n\n"
-            f"Book B:\n{target_book}\n\n"
+            f"Item A:\n{source_item}\n\n"
+            f"Item B:\n{target_item}\n\n"
             "Return JSON."
         )
 
@@ -86,17 +86,17 @@ class RelationshipAgent:
                 method="llm",
             )
         except LLMError:
-            return self._heuristic_relationship(source_book, target_book)
+            return self._heuristic_relationship(source_item, target_item)
 
     def _heuristic_relationship(
         self,
-        source_book: dict[str, str | list[str] | int | None],
-        target_book: dict[str, str | list[str] | int | None],
+        source_item: dict[str, str | list[str] | int | None],
+        target_item: dict[str, str | list[str] | int | None],
     ) -> RelationshipResult | None:
-        source = str(source_book.get("title") or "").strip()
-        target = str(target_book.get("title") or "").strip()
-        source_subjects = {str(s).lower() for s in (source_book.get("subjects") or [])}
-        target_subjects = {str(s).lower() for s in (target_book.get("subjects") or [])}
+        source = str(source_item.get("title") or "").strip()
+        target = str(target_item.get("title") or "").strip()
+        source_subjects = {str(s).lower() for s in (source_item.get("subjects") or [])}
+        target_subjects = {str(s).lower() for s in (target_item.get("subjects") or [])}
         overlap = source_subjects.intersection(target_subjects)
         if overlap:
             reason = f"Shared subjects: {', '.join(sorted(overlap)[:3])}"
@@ -109,8 +109,8 @@ class RelationshipAgent:
                 method="heuristic",
             )
 
-        source_desc = str(source_book.get("description") or "").lower()
-        target_desc = str(target_book.get("description") or "").lower()
+        source_desc = str(source_item.get("description") or "").lower()
+        target_desc = str(target_item.get("description") or "").lower()
         if source_desc and target_desc and source_desc[:80] in target_desc:
             return RelationshipResult(
                 source=source,
@@ -142,6 +142,54 @@ class RelationshipAgent:
         if "CONTRADICT" in normalized or "OPPOS" in normalized:
             return "CONTRADICTS"
         return None
+
+    async def async_determine_relationship(
+        self,
+        source_item: dict[str, str | list[str] | int | None],
+        target_item: dict[str, str | list[str] | int | None],
+    ) -> RelationshipResult | None:
+        """Async version — uses httpx.AsyncClient, no thread required."""
+        source = str(source_item.get("title") or "").strip()
+        target = str(target_item.get("title") or "").strip()
+        if not source or not target or source == target:
+            return None
+
+        if not self._llm_client or not hasattr(self._llm_client, "async_generate_json"):
+            return self._heuristic_relationship(source_item, target_item)
+
+        system_prompt = (
+            "Determine if there is a meaningful intellectual relationship between two items. "
+            "Return strict JSON with keys: source, relation, target, confidence, reason. "
+            "Allowed canonical relations: RELATED_TO, INFLUENCED_BY, CONTRADICTS, EXPANDS, BELONGS_TO_FIELD. "
+            "Natural-language relations like 'discusses' or 'inspired by' are valid inputs, "
+            "but you must map them to canonical relations. "
+            "If no relationship exists, return relation as NONE."
+        )
+        user_prompt = (
+            f"Item A:\n{source_item}\n\n"
+            f"Item B:\n{target_item}\n\n"
+            "Return JSON."
+        )
+
+        try:
+            payload = await self._llm_client.async_generate_json(
+                system_prompt=system_prompt, user_prompt=user_prompt
+            )
+            relation = self._normalize_relation(payload)
+            if not relation:
+                return None
+            confidence = self._parse_confidence(payload.get("confidence"))
+            reason = str(payload.get("reason") or "").strip()[:240] or None
+            return RelationshipResult(
+                source=source,
+                relation=relation,
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                method="llm",
+            )
+        except LLMError:
+            return self._heuristic_relationship(source_item, target_item)
 
     def _parse_confidence(self, value: Any) -> float | None:
         if value is None:

@@ -11,8 +11,8 @@ class AnalyticsGraphRepository:
     def __init__(self, root_repo: Any) -> None:
         self._root = root_repo
 
-    def get_central_books(self, limit: int = 5) -> list[dict[str, Any]]:
-        return self._root.get_central_books(limit=limit)
+    def get_central_items(self, limit: int = 5) -> list[dict[str, Any]]:
+        return self._root.get_central_items(limit=limit)
 
     def detect_clusters(self) -> list[dict[str, Any]]:
         return self._root.detect_clusters()
@@ -29,14 +29,14 @@ class AnalyticsGraphRepository:
     def get_top_concepts(self, limit: int = 10) -> list[dict[str, Any]]:
         return self._root.get_top_concepts(limit=limit)
 
-    def get_unlinked_books(self, limit: int = 10) -> list[dict[str, Any]]:
-        return self._root.get_unlinked_books(limit=limit)
+    def get_unlinked_items(self, limit: int = 10) -> list[dict[str, Any]]:
+        return self._root.get_unlinked_items(limit=limit)
 
-    def get_book_relationship_edges(self, limit: int = 30) -> list[dict[str, Any]]:
-        return self._root.get_book_relationship_edges(limit=limit)
+    def get_relationship_edges(self, limit: int = 30) -> list[dict[str, Any]]:
+        return self._root.get_relationship_edges(limit=limit)
 
-    def get_book_nodes_by_titles(self, titles: list[str]) -> list[dict[str, Any]]:
-        return self._root.get_book_nodes_by_titles(titles)
+    def get_nodes_by_titles(self, titles: list[str]) -> list[dict[str, Any]]:
+        return self._root.get_nodes_by_titles(titles)
 
     def get_field_nodes_by_names(self, fields: list[str]) -> list[dict[str, Any]]:
         return self._root.get_field_nodes_by_names(fields)

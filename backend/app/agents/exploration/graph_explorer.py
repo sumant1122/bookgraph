@@ -50,12 +50,12 @@ class GraphExplorerAgent:
         clusters = self._repo.detect_clusters()[:4]
         output: list[GraphDiscovery] = []
         for cluster in clusters:
-            books = [str(title) for title in cluster.get("books", []) if title][:6]
-            if len(books) < 2:
+            items = [str(title) for title in cluster.get("items", []) if title][:6]
+            if len(items) < 2:
                 continue
-            book_nodes = self._repo.get_book_nodes_by_titles(books)
-            node_ids = [str(node.get("id")) for node in book_nodes if node.get("id")]
-            related_nodes = [str(node.get("label")) for node in book_nodes if node.get("label")]
+            item_nodes = self._repo.get_nodes_by_titles(items)
+            node_ids = [str(node.get("id")) for node in item_nodes if node.get("id")]
+            related_nodes = [str(node.get("label")) for node in item_nodes if node.get("label")]
             if len(node_ids) < 2:
                 continue
             community = str(cluster.get("communityId") or "cluster")
@@ -74,20 +74,20 @@ class GraphExplorerAgent:
         return output
 
     def _build_centrality_discoveries(self) -> list[GraphDiscovery]:
-        ranked = self._repo.get_central_books(limit=5)
-        books = [str(row.get("title")) for row in ranked if row.get("title")][:5]
-        if not books:
+        ranked = self._repo.get_central_items(limit=5)
+        items = [str(row.get("title")) for row in ranked if row.get("title")][:5]
+        if not items:
             return []
-        book_nodes = self._repo.get_book_nodes_by_titles(books)
-        node_ids = [str(node.get("id")) for node in book_nodes if node.get("id")]
-        related_nodes = [str(node.get("label")) for node in book_nodes if node.get("label")]
+        item_nodes = self._repo.get_nodes_by_titles(items)
+        node_ids = [str(node.get("id")) for node in item_nodes if node.get("id")]
+        related_nodes = [str(node.get("label")) for node in item_nodes if node.get("label")]
         if not node_ids:
             return []
-        title = "Central Books Driving The Graph"
+        title = "Central Items Driving The Graph"
         description = (
-            f"These books are highly connected and likely shape many other topics: {', '.join(related_nodes[:3])}."
+            f"These items are highly connected and likely shape many other topics: {', '.join(related_nodes[:3])}."
         )
-        signature = self._signature("central", "books", node_ids)
+        signature = self._signature("central", "items", node_ids)
         return [
             GraphDiscovery(
                 insight_type="centrality",
@@ -135,25 +135,25 @@ class GraphExplorerAgent:
             )
         return output
 
-    def _describe_cluster(self, community: str, books: list[str]) -> tuple[str, str]:
-        fallback_title = f"Cluster Discovery: {books[0]}"
+    def _describe_cluster(self, community: str, items: list[str]) -> tuple[str, str]:
+        fallback_title = f"Cluster Discovery: {items[0]}"
         fallback_description = (
-            f"This cluster groups related books such as {', '.join(books[:3])}, "
+            f"This cluster groups related items such as {', '.join(items[:3])}, "
             "suggesting a shared intellectual theme."
         )
         if not self._llm_client:
             return fallback_title, fallback_description
 
         system_prompt = (
-            "You analyze clusters in a book knowledge graph. "
+            "You analyze clusters in a knowledge graph. "
             "Return strict JSON with keys: title, description. "
             "Description should be concise and explain the intellectual theme."
         )
         user_prompt = (
-            "You are analyzing a knowledge graph of books and concepts. "
+            "You are analyzing a knowledge graph of items and concepts. "
             "Explain the significance of this cluster of nodes and what intellectual theme it represents.\n\n"
             f"Community: {community}\n"
-            f"Books: {books}\n"
+            f"Items: {items}\n"
         )
         try:
             payload = self._llm_client.generate_json(system_prompt=system_prompt, user_prompt=user_prompt)

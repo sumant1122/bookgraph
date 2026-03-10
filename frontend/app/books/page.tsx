@@ -1,189 +1,348 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
-import { formatFetchError, resolveApiBaseUrl } from "@/lib/apiBase";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { resolveApiBaseUrl } from "@/lib/apiBase";
 
-type BookResponse = {
-  title: string;
-  author: string;
-  publish_year?: number | null;
-  subjects: string[];
-  description: string;
-  concepts: string[];
-  fields: string[];
-  relationships_created: number;
-};
-
-type UiError = {
-  title: string;
-  detail: string;
-  hint?: string;
-};
-
-const INGEST_STEPS = [
-  "Searching catalog metadata",
-  "Extracting concepts and fields",
-  "Linking related books",
-  "Finalizing graph updates"
-];
+type IngestionSource = "openlibrary" | "googlebooks" | "arxiv" | "pdf";
 
 export default function BooksPage() {
   const apiBase = resolveApiBaseUrl();
+  const [source, setSource] = useState<IngestionSource>("openlibrary");
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<BookResponse | null>(null);
-  const [resultAt, setResultAt] = useState<string | null>(null);
-  const [error, setError] = useState<UiError | null>(null);
-  const [stepIndex, setStepIndex] = useState(0);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<any>(null);
+  const [step, setStep] = useState(0);
+  const [recentItems, setRecentItems] = useState<any[]>([]);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const steps = ["Analyzing document", "Extracting metadata", "Identifying concepts", "Linking knowledge graph", "Finalizing"];
+
+  const loadRecentItems = useCallback(async () => {
+    try {
+      setItemsLoading(true);
+      const res = await fetch(`${apiBase}/books?limit=10`);
+      if (res.ok) setRecentItems(await res.json());
+    } catch (err) {
+      console.error("Failed to load recent items", err);
+    } finally {
+      setItemsLoading(false);
+    }
+  }, [apiBase]);
 
   useEffect(() => {
-    if (!loading) return;
-    setStepIndex(0);
-    const id = window.setInterval(() => {
-      setStepIndex((current) => Math.min(current + 1, INGEST_STEPS.length - 1));
-    }, 900);
-    return () => window.clearInterval(id);
-  }, [loading]);
+    void loadRecentItems();
+  }, [loadRecentItems]);
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!title.trim()) return;
+  const handleIngest = async (e: any) => {
+    e.preventDefault();
+    if (source !== "pdf" && !title.trim()) return;
+    
     setLoading(true);
-    setResult(null);
     setError(null);
-    try {
-      const response = await fetch(`${apiBase}/books`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title })
-      });
-      let payload: Record<string, unknown> = {};
-      try {
-        payload = (await response.json()) as Record<string, unknown>;
-      } catch {
-        payload = {};
-      }
-      if (!response.ok) {
-        const detail = typeof payload.detail === "string" ? payload.detail : "Failed to ingest book.";
-        throw { status: response.status, detail };
-      }
-      setResult(payload as BookResponse);
-      setResultAt(new Date().toISOString());
-      setTitle("");
-    } catch (err: unknown) {
-      const status = typeof err === "object" && err !== null && "status" in err ? Number((err as { status: number }).status) : 0;
-      const apiOrRuntimeDetail =
-        typeof err === "object" && err !== null && "detail" in err
-          ? String((err as { detail: string }).detail)
-          : formatFetchError(err, apiBase, "Unexpected error");
-      const detail = apiOrRuntimeDetail;
+    setResult(null);
+    setStep(0);
+    
+    // Progress simulation
+    const interval = setInterval(() => {
+      setStep(s => Math.min(s + 1, steps.length - 1));
+    }, 1200);
 
-      if (status === 404) {
-        setError({
-          title: "Book Not Found",
-          detail,
-          hint: "Try a broader or canonical title (for example, remove subtitles)."
-        });
-      } else if (status >= 500) {
-        setError({
-          title: "Backend Error",
-          detail,
-          hint: "Check backend logs and verify Neo4j + LLM provider connectivity."
-        });
-      } else {
-        setError({
-          title: "Request Failed",
-          detail,
-          hint: `If this is a network error, verify backend is running at ${apiBase}.`
-        });
+    try {
+      let endpoint = "/books";
+      let method = "POST";
+      let body: any = JSON.stringify({ title });
+      let headers: any = { "Content-Type": "application/json" };
+
+      if (source === "googlebooks") endpoint = "/google-books";
+      if (source === "arxiv") endpoint = "/papers";
+      
+      if (source === "pdf") {
+        endpoint = "/pdf";
+        const file = fileInputRef.current?.files?.[0];
+        if (!file) throw new Error("Please select a PDF file");
+        const formData = new FormData();
+        formData.append("file", file);
+        body = formData;
+        headers = {}; // Let browser set multipart boundary
       }
+
+      const res = await fetch(`${apiBase}${endpoint}`, { method, headers, body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ingestion failed");
+      setResult(data);
+      void loadRecentItems();
+    } catch (err: any) {
+      setError(err.message || "Something went wrong during ingestion");
     } finally {
+      clearInterval(interval);
       setLoading(false);
     }
   };
 
-  const progress = Math.round(((stepIndex + 1) / INGEST_STEPS.length) * 100);
+  const handleDeleteItem = async (id: string) => {
+    if (!window.confirm("Are you sure you want to remove this item from your graph?")) return;
+    try {
+      const res = await fetch(`${apiBase}/graph/nodes/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (res.ok) {
+        setRecentItems(prev => prev.filter(item => item.id !== id));
+        if (result && result.id === id) setResult(null);
+      }
+    } catch (err) {
+      alert("Failed to delete item");
+    }
+  };
 
   return (
-    <div className="grid two">
-      <div className="card">
-        <h2 className="page-title">Add Book</h2>
-        <p className="page-subtitle">Ingest by title and automatically enrich metadata, concepts, fields, and graph relationships.</p>
-        <form onSubmit={onSubmit} className="grid">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Clean Code" style={{ flex: 1 }} />
-          <div className="row">
-            <button type="submit" disabled={loading}>
-              {loading ? "Ingesting..." : "Add Book"}
+    <div>
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="mb-2">Knowledge Ingestion</h1>
+        <p className="text-secondary">
+          Grow your library by adding books, research papers, or local PDF documents.
+        </p>
+      </div>
+
+      {/* Source Selector */}
+      <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
+        {[
+          { id: "openlibrary", label: "Open Library", icon: "📚" },
+          { id: "googlebooks", label: "Google Books", icon: "🔍" },
+          { id: "arxiv", label: "arXiv Papers", icon: "📄" },
+          { id: "pdf", label: "Local PDF", icon: "📂" },
+        ].map((s) => (
+          <button
+            key={s.id}
+            onClick={() => { setSource(s.id as IngestionSource); setResult(null); setError(null); }}
+            className={`chip ${source === s.id ? "active" : ""}`}
+            style={{ padding: "10px 16px", cursor: "pointer" }}
+          >
+            {s.icon} {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Ingestion Card */}
+      <div className="card mb-8">
+        <form onSubmit={handleIngest}>
+          {source !== "pdf" ? (
+            <input
+              value={title}
+              onChange={(e: any) => setTitle(e.target.value)}
+              placeholder={
+                source === "arxiv" 
+                  ? "Enter paper title or arXiv ID..." 
+                  : "Enter book title..."
+              }
+              className="mb-4"
+              style={{ fontSize: "1.1rem", padding: "12px" }}
+            />
+          ) : (
+            <div 
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                border: "2px dashed var(--border)",
+                borderRadius: "12px",
+                padding: "32px",
+                textAlign: "center",
+                cursor: "pointer",
+                marginBottom: "20px",
+                background: "var(--background-alt)"
+              }}
+            >
+              <input 
+                type="file" 
+                accept=".pdf" 
+                ref={fileInputRef} 
+                style={{ display: "none" }} 
+                onChange={(e) => setTitle(e.target.files?.[0]?.name || "")}
+              />
+              <div style={{ fontSize: "2rem", marginBottom: "8px" }}>📤</div>
+              <p style={{ fontWeight: 500 }}>{title || "Click to select a PDF file"}</p>
+              <p className="text-sm muted">We'll automatically extract metadata and concepts</p>
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button 
+              type="submit" 
+              className="btn btn-primary"
+              disabled={loading || (source !== "pdf" && !title.trim()) || (source === "pdf" && !title)}
+              style={{ padding: "12px 24px" }}
+            >
+              {loading ? (
+                <>
+                  <span style={{ display: "inline-block", animation: "pulse 1s infinite", marginRight: "8px" }}>⚡</span>
+                  {steps[step]}...
+                </>
+              ) : (
+                `Ingest ${source === "pdf" ? "Document" : source === "arxiv" ? "Paper" : "Book"}`
+              )}
             </button>
+            {(result || error) && (
+              <button 
+                type="button" 
+                className="btn btn-ghost"
+                onClick={() => { setResult(null); setError(null); setTitle(""); }}
+              >
+                Reset
+              </button>
+            )}
           </div>
         </form>
 
         {loading && (
-          <div className="ingest-progress">
-            <p className="muted" style={{ margin: 0 }}>
-              {INGEST_STEPS[stepIndex]}
-            </p>
-            <div className="progress-track" aria-hidden>
-              <div className="progress-bar" style={{ width: `${progress}%` }} />
+          <div className="ingest-progress mt-6">
+            <div className="progress-bar-track" style={{ height: "6px" }}>
+              <div 
+                className="progress-bar-fill" 
+                style={{ 
+                  width: `${((step + 1) / steps.length) * 100}%`,
+                  transition: "width 0.4s ease-out" 
+                }} 
+              />
             </div>
-            <p className="muted" style={{ margin: 0 }}>
-              {progress}% complete
-            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px" }}>
+              <p className="text-xs font-medium text-primary-light uppercase tracking-wider">{steps[step]}</p>
+              <p className="text-xs muted">{Math.round(((step + 1) / steps.length) * 100)}%</p>
+            </div>
           </div>
         )}
 
         {error && (
-          <div className="error-panel">
-            <h3>{error.title}</h3>
-            <p>{error.detail}</p>
-            {error.hint && <p className="muted">{error.hint}</p>}
+          <div className="error-panel mt-4">
+            <h4 style={{ color: "#ef4444", marginBottom: "4px" }}>Ingestion Error</h4>
+            <p className="text-sm">{error}</p>
           </div>
         )}
       </div>
 
+      {/* Result Card */}
       {result && (
-        <div className="card book-result-card">
-          <h3 className="page-title" style={{ marginBottom: 8 }}>{result.title}</h3>
-          <div className="row">
-            <span className="chip">{result.author}</span>
-            <span className="chip">Year: {result.publish_year ?? "Unknown"}</span>
-            <span className="chip">Relationships: {result.relationships_created}</span>
-            {resultAt && <span className="chip">Updated {new Date(resultAt).toLocaleTimeString()}</span>}
-          </div>
-
-          <p className="muted" style={{ marginTop: 12 }}>
-            {result.description || "No description was returned from metadata sources."}
-          </p>
-
-          <div className="result-block">
-            <h4>Fields</h4>
-            <div className="row">
-              {result.fields.length ? result.fields.map((field) => <span key={field} className="chip">{field}</span>) : <span className="muted">None detected yet.</span>}
+        <div className="card mb-8 animate-fadeIn" style={{ borderLeft: "4px solid var(--primary)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+            <div>
+              <h2 className="mb-1">{result.title}</h2>
+              <p className="text-secondary font-medium">{result.author} · {result.publish_year || "Unknown Year"}</p>
             </div>
+            <span className="chip secondary">SUCCESS</span>
+          </div>
+          
+          {result.description && (
+            <p className="text-secondary mb-6" style={{ lineHeight: 1.6, fontSize: "0.95rem" }}>
+              {result.description}
+            </p>
+          )}
+
+          <div className="grid two gap-6">
+            {result.fields?.length > 0 && (
+              <div>
+                <h5 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Strategic Fields</h5>
+                <div className="flex flex-wrap gap-2">
+                  {result.fields.map((f: string) => (
+                    <span key={f} className="chip">{f}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {result.concepts?.length > 0 && (
+              <div>
+                <h5 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Core Concepts</h5>
+                <div className="flex flex-wrap gap-2">
+                  {result.concepts.map((c: string) => (
+                    <span key={c} className="chip secondary">{c}</span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="result-block">
-            <h4>Concepts</h4>
-            <div className="row">
-              {result.concepts.length ? result.concepts.map((concept) => <span key={concept} className="chip">{concept}</span>) : <span className="muted">None detected yet.</span>}
-            </div>
-          </div>
-
-          <div className="result-block">
-            <h4>Subjects</h4>
-            <div className="row">
-              {result.subjects.length ? result.subjects.slice(0, 10).map((subject) => <span key={subject} className="chip">{subject}</span>) : <span className="muted">No subject tags available.</span>}
-            </div>
-          </div>
-
-          <div className="row" style={{ marginTop: 6 }}>
-            <Link href="/graph">Open Graph</Link>
-            <Link href="/discoveries">View Discoveries</Link>
-            <Link href="/insights">View Insights</Link>
+          <div style={{ 
+            marginTop: "24px", 
+            paddingTop: "16px", 
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}>
+            <span style={{ fontSize: "1.2rem" }}>🔗</span>
+            <span className="text-sm font-medium">
+              Added <strong className="text-primary-light">{result.relationships_created}</strong> automated connections to existing knowledge.
+            </span>
           </div>
         </div>
       )}
+
+      {/* Next Steps */}
+      <div className="grid-3 mb-8">
+        <Link href="/graph" className="action-card">
+          <span className="action-card-type">Step 1</span>
+          <span className="action-card-title">Visualize Connections</span>
+          <span className="action-card-desc">See how the new item fits into your map</span>
+        </Link>
+        <Link href="/chat" className="action-card">
+          <span className="action-card-type">Step 2</span>
+          <span className="action-card-title">Query Intelligence</span>
+          <span className="action-card-desc">Ask questions about this book's content</span>
+        </Link>
+      </div>
+
+      {/* Management Section */}
+      <div className="mb-4" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ fontSize: "1.25rem" }}>Recently Ingested</h2>
+        <button className="btn btn-ghost" onClick={loadRecentItems} disabled={itemsLoading}>
+          {itemsLoading ? "Updating..." : "🔄 Refresh List"}
+        </button>
+      </div>
+
+      <div className="card">
+        {recentItems.length === 0 ? (
+          <div style={{ padding: "40px", textAlign: "center" }}>
+            <p className="muted">No items in your graph yet.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                  <th style={{ padding: "12px", fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase" }}>Item</th>
+                  <th style={{ padding: "12px", fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase" }}>Author</th>
+                  <th style={{ padding: "12px", fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase" }}>Year</th>
+                  <th style={{ padding: "12px", fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase" }}>Type</th>
+                  <th style={{ padding: "12px", textAlign: "right" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentItems.map((item) => (
+                  <tr key={item.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td style={{ padding: "12px", fontWeight: 500 }}>{item.title}</td>
+                    <td style={{ padding: "12px", color: "var(--text-secondary)", fontSize: "0.875rem" }}>{item.author}</td>
+                    <td style={{ padding: "12px", color: "var(--text-secondary)", fontSize: "0.875rem" }}>{item.publish_year || "—"}</td>
+                    <td style={{ padding: "12px" }}>
+                      <span className="chip" style={{ fontSize: "0.7rem", padding: "2px 8px" }}>
+                        {item.type === "Book" ? "📚 Book" : "📄 Paper"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px", textAlign: "right" }}>
+                      <button 
+                        className="btn btn-ghost" 
+                        style={{ color: "#ef4444", padding: "6px" }}
+                        onClick={() => handleDeleteItem(item.id)}
+                        title="Delete from graph"
+                      >
+                        🗑️
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

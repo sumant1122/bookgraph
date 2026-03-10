@@ -10,22 +10,26 @@ from app.agents.exploration.knowledge_gap_agent import KnowledgeGapAgent
 from app.agents.exploration.reading_path_agent import ReadingPathAgent
 from app.agents.chat_agent import ChatAgent
 from app.agents.concept_agent import ConceptAgent
-from app.agents.insight_agent import InsightAgent
 from app.agents.llm_client import OpenAICompatibleJSONClient
 from app.agents.relationship_agent import RelationshipAgent
+from app.agents.metadata_agent import MetadataAgent
 from app.agents.scheduler import AgentScheduler
+from app.api.middleware import RequestLoggingMiddleware
 from app.api.routes import router
 from app.core.config import get_settings
 from app.graph.analytics_repo import AnalyticsGraphRepository
-from app.graph.book_repo import BookGraphRepository
+from app.graph.content_repo import ContentGraphRepository
 from app.graph.chat_repo import ChatGraphRepository
 from app.graph.discovery_repo import DiscoveryGraphRepository
 from app.graph.exploration_repo import ExplorationGraphRepository
-from app.graph.neo4j_client import GraphRepository
+from app.graph.neo4j_client import Neo4jRepository
 from app.ingestion.openlibrary import OpenLibraryClient
-from app.insights.graph_insights import GraphInsightEngine
-from app.services.book_service import BookService
+from app.ingestion.arxiv import ArxivClient
+from app.ingestion.google_books import GoogleBooksClient
+from app.services.content_service import ContentService
 from app.services.chat_service import ChatService
+
+__version__ = "0.1.0"  # bump this in sync with git tags (fix #8)
 
 
 def _build_llm_client() -> OpenAICompatibleJSONClient | None:
@@ -86,13 +90,13 @@ def _build_llm_client() -> OpenAICompatibleJSONClient | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    graph_repo = GraphRepository(
+    graph_repo = Neo4jRepository(
         uri=settings.neo4j_uri,
         username=settings.neo4j_username,
         password=settings.neo4j_password,
     )
     graph_repo.ensure_constraints()
-    book_repo = BookGraphRepository(graph_repo)
+    content_repo = ContentGraphRepository(graph_repo)
     analytics_repo = AnalyticsGraphRepository(graph_repo)
     discovery_repo = DiscoveryGraphRepository(graph_repo)
     chat_repo = ChatGraphRepository(graph_repo)
@@ -100,27 +104,31 @@ async def lifespan(app: FastAPI):
     llm_client = _build_llm_client()
     concept_agent = ConceptAgent(llm_client=llm_client)
     relationship_agent = RelationshipAgent(llm_client=llm_client)
-    insight_agent = InsightAgent(llm_client=llm_client)
+    metadata_agent = MetadataAgent(llm_client=llm_client)
     chat_agent = ChatAgent(llm_client=llm_client)
     graph_explorer_agent = GraphExplorerAgent(repo=exploration_repo, llm_client=llm_client)
     reading_path_agent = ReadingPathAgent(repo=discovery_repo, llm_client=llm_client)
     knowledge_gap_agent = KnowledgeGapAgent(repo=discovery_repo, llm_client=llm_client)
     scheduler = AgentScheduler(state_store=discovery_repo)
     openlibrary_client = OpenLibraryClient(settings.openlibrary_base_url)
+    arxiv_client = ArxivClient()
+    google_books_client = GoogleBooksClient()
     app.state.graph_repo = graph_repo
-    app.state.book_repo = book_repo
+    app.state.content_repo = content_repo
     app.state.analytics_repo = analytics_repo
     app.state.discovery_repo = discovery_repo
     app.state.chat_repo = chat_repo
     app.state.exploration_repo = exploration_repo
-    app.state.book_service = BookService(
+    app.state.content_service = ContentService(
         openlibrary_client=openlibrary_client,
-        graph_repo=book_repo,
+        arxiv_client=arxiv_client,
+        google_books_client=google_books_client,
+        graph_repo=content_repo,
         concept_agent=concept_agent,
         relationship_agent=relationship_agent,
+        metadata_agent=metadata_agent,
         relationship_scan_limit=settings.relationship_scan_limit,
     )
-    app.state.insight_engine = GraphInsightEngine(analytics_repo, insight_agent=insight_agent)
     app.state.chat_service = ChatService(chat_repo, chat_agent=chat_agent)
     app.state.graph_explorer_agent = graph_explorer_agent
     app.state.reading_path_agent = reading_path_agent
@@ -131,7 +139,6 @@ async def lifespan(app: FastAPI):
             ("graph_explorer", 6 * 60 * 60, graph_explorer_agent.run),
             ("reading_path", 24 * 60 * 60, reading_path_agent.run),
             ("knowledge_gap", 24 * 60 * 60, knowledge_gap_agent.run),
-            ("insight_materializer", 6 * 60 * 60, app.state.insight_engine.materialize_latest_bundle),
         ]
     )
     try:
@@ -139,11 +146,20 @@ async def lifespan(app: FastAPI):
     finally:
         await scheduler.stop()
         await openlibrary_client.close()
+        await google_books_client.close()
         graph_repo.close()
 
 
-app = FastAPI(title="BookGraph API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="BookGraph API",
+    version=__version__,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
+# Middleware — order matters: logging wraps everything, CORS is inner layer.
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -152,4 +168,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(router)
+# All routes under /v1 — fix #8 (API versioning)
+app.include_router(router, prefix="/v1")
+

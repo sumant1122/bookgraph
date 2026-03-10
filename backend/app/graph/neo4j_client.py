@@ -6,19 +6,67 @@ from typing import Any
 from neo4j import GraphDatabase
 from neo4j.exceptions import CypherSyntaxError, Neo4jError
 
-from app.ingestion.openlibrary import BookMetadata
+from app.models import BookMetadata, PaperMetadata
 
 
-class GraphRepository:
+# Content-to-content relationship types managed by the relationship-scan agent.
+# These may not exist yet on a fresh database.
+_CONTENT_REL_TYPES = ("RELATED_TO", "INFLUENCED_BY", "CONTRADICTS", "EXPANDS")
+# Core structural types that are always present after the first upsert.
+_CORE_REL_TYPES = ("WRITTEN_BY", "MENTIONS", "BELONGS_TO")
+
+
+class Neo4jRepository:
     def __init__(self, uri: str, username: str, password: str) -> None:
         self._driver = GraphDatabase.driver(uri, auth=(username, password))
+        self._cached_content_rels: frozenset[str] | None = None
 
     def close(self) -> None:
         self._driver.close()
 
+    def _content_rel_types(self) -> frozenset[str]:
+        """Return the subset of _CONTENT_REL_TYPES that actually exist in the DB.
+
+        The result is cached for the lifetime of this instance so we only pay
+        the round-trip cost once per process restart.
+        """
+        if self._cached_content_rels is not None:
+            return self._cached_content_rels
+        with self._driver.session() as session:
+            rows = session.run("CALL db.relationshipTypes() YIELD relationshipType").data()
+            existing = frozenset(r["relationshipType"] for r in rows)
+        result = frozenset(_CONTENT_REL_TYPES) & existing
+        self._cached_content_rels = result
+        return result
+
+    def _content_rel_pattern(self, include_core: bool = False) -> str:
+        """Return a Cypher relationship-type pattern string, e.g.
+        ':RELATED_TO|INFLUENCED_BY' — only including types that exist in the DB.
+
+        If *include_core* is True, the core structural types
+        (WRITTEN_BY, MENTIONS, BELONGS_TO) are prepended before the
+        content-to-content types.
+
+        Returns an empty string (matches any relationship) only when called
+        with include_core=True and no types are present yet — callers that
+        need a safe fallback should handle this.
+        """
+        parts: list[str] = []
+        if include_core:
+            parts.extend(_CORE_REL_TYPES)
+        parts.extend(sorted(self._content_rel_types()))  # deterministic ordering
+        if not parts:
+            return ""  # should not happen in practice once content are ingested
+        return ":" + "|".join(parts)
+
+    def invalidate_rel_cache(self) -> None:
+        """Call after creating new relationship types (e.g. after a rel-scan)."""
+        self._cached_content_rels = None
+
     def ensure_constraints(self) -> None:
         constraints = [
             "CREATE CONSTRAINT book_title_unique IF NOT EXISTS FOR (b:Book) REQUIRE b.title IS UNIQUE",
+            "CREATE CONSTRAINT paper_title_unique IF NOT EXISTS FOR (p:Paper) REQUIRE p.title IS UNIQUE",
             "CREATE CONSTRAINT author_name_unique IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
             "CREATE CONSTRAINT concept_name_unique IF NOT EXISTS FOR (c:Concept) REQUIRE c.name IS UNIQUE",
             "CREATE CONSTRAINT field_name_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.name IS UNIQUE",
@@ -38,7 +86,8 @@ class GraphRepository:
         SET b.publish_year = $publish_year,
             b.subjects = $subjects,
             b.description = $description,
-            b.openlibrary_key = $openlibrary_key
+            b.openlibrary_key = $openlibrary_key,
+            b.google_books_id = $google_books_id
         MERGE (a:Author {name: $author})
         MERGE (b)-[:WRITTEN_BY]->(a)
         WITH b, $subjects AS subjects
@@ -55,26 +104,52 @@ class GraphRepository:
                 subjects=metadata.subjects,
                 description=metadata.description,
                 openlibrary_key=metadata.openlibrary_key,
+                google_books_id=metadata.google_books_id,
                 author=metadata.author,
             ).consume()
 
-    def add_concepts_and_fields(self, book_title: str, concepts: list[str], fields: list[str]) -> None:
+    def upsert_paper(self, metadata: PaperMetadata) -> None:
         query = """
-        MATCH (b:Book {title: $book_title})
-        WITH b, $concepts AS concepts, $fields AS fields
+        MERGE (p:Paper {title: $title})
+        SET p.publish_year = $publish_year,
+            p.description = $description,
+            p.arxiv_id = $arxiv_id,
+            p.doi = $doi,
+            p.journal = $journal
+        MERGE (a:Author {name: $author})
+        MERGE (p)-[:WRITTEN_BY]->(a)
+        RETURN p.title AS title
+        """
+        with self._driver.session() as session:
+            session.run(
+                query,
+                title=metadata.title,
+                publish_year=metadata.publish_year,
+                description=metadata.description,
+                arxiv_id=metadata.arxiv_id,
+                doi=metadata.doi,
+                journal=metadata.journal,
+                author=metadata.author,
+            ).consume()
+
+    def add_concepts_and_fields(self, item_title: str, concepts: list[str], fields: list[str]) -> None:
+        query = """
+        MATCH (item)
+        WHERE item.title = $item_title AND (item:Book OR item:Paper)
+        WITH item, $concepts AS concepts, $fields AS fields
         FOREACH (concept IN concepts |
             MERGE (c:Concept {name: concept})
-            MERGE (b)-[:MENTIONS]->(c)
+            MERGE (item)-[:MENTIONS]->(c)
         )
         FOREACH (field IN fields |
             MERGE (f:Field {name: field})
-            MERGE (b)-[:BELONGS_TO]->(f)
+            MERGE (item)-[:BELONGS_TO]->(f)
         )
         """
         with self._driver.session() as session:
-            session.run(query, book_title=book_title, concepts=concepts, fields=fields).consume()
+            session.run(query, item_title=item_title, concepts=concepts, fields=fields).consume()
 
-    def get_books_for_relationship_scan(
+    def get_items_for_relationship_scan(
         self,
         exclude_title: str,
         limit: int,
@@ -84,18 +159,18 @@ class GraphRepository:
         preferred_fields = [str(field).lower() for field in (preferred_fields or []) if str(field).strip()]
         safe_publish_year = publish_year if publish_year is not None else 9999
         query = """
-        MATCH (b:Book)
-        WHERE b.title <> $exclude_title
-        OPTIONAL MATCH (b)-[:BELONGS_TO]->(f:Field)
-        WITH b, collect(DISTINCT toLower(f.name)) AS field_names, collect(DISTINCT f.name) AS original_fields
-        WITH b, original_fields,
+        MATCH (item)
+        WHERE item.title <> $exclude_title AND (item:Book OR item:Paper)
+        OPTIONAL MATCH (item)-[:BELONGS_TO]->(f:Field)
+        WITH item, collect(DISTINCT toLower(f.name)) AS field_names, collect(DISTINCT f.name) AS original_fields
+        WITH item, original_fields,
              size([field IN field_names WHERE field IN $preferred_fields]) AS overlap_score,
-             abs(coalesce(b.publish_year, $safe_publish_year) - $safe_publish_year) AS year_distance
-        RETURN b.title AS title,
-               b.description AS description,
-               b.publish_year AS publish_year,
+             abs(coalesce(item.publish_year, $safe_publish_year) - $safe_publish_year) AS year_distance
+        RETURN item.title AS title,
+               item.description AS description,
+               item.publish_year AS publish_year,
                original_fields AS subjects
-        ORDER BY overlap_score DESC, year_distance ASC, b.title ASC
+        ORDER BY overlap_score DESC, year_distance ASC, item.title ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
@@ -108,7 +183,7 @@ class GraphRepository:
             )
             return [record.data() for record in results]
 
-    def add_book_relationship(
+    def add_relationship(
         self,
         source: str,
         relation: str,
@@ -123,7 +198,9 @@ class GraphRepository:
             return
 
         query = f"""
-        MATCH (source:Book {{title: $source}}), (target:Book {{title: $target}})
+        MATCH (source), (target)
+        WHERE source.title = $source AND (source:Book OR source:Paper)
+        AND target.title = $target AND (target:Book OR target:Paper)
         MERGE (source)-[r:{relation}]->(target)
         ON CREATE SET r.created_at = datetime()
         SET r.last_seen_at = datetime(),
@@ -200,6 +277,7 @@ class GraphRepository:
         safe_query = (query or "").strip()
         type_map = {
             "book": "Book",
+            "paper": "Paper",
             "author": "Author",
             "concept": "Concept",
             "field": "Field",
@@ -215,15 +293,15 @@ class GraphRepository:
           AND NOT n:KnowledgeGap
           AND (
             $query = ''
-            OR toLower(coalesce(n.title, n.name, '')) CONTAINS toLower($query)
+            OR toLower(coalesce(n.title, n.name, "")) CONTAINS toLower($query)
           )
           AND ($label IS NULL OR $label IN labels(n))
-        WITH n, toLower(coalesce(n.title, n.name, '')) AS search_label
+        WITH n, toLower(coalesce(n.title, n.name, "")) AS search_label
         RETURN elementId(n) AS id,
                labels(n) AS labels,
                properties(n) AS props,
                search_label = toLower($query) AS exact_match
-        ORDER BY exact_match DESC, coalesce(n.title, n.name, '') ASC
+        ORDER BY exact_match DESC, coalesce(n.title, n.name, "") ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
@@ -253,10 +331,11 @@ class GraphRepository:
     ) -> dict[str, list[dict[str, Any]]]:
         safe_depth = max(1, min(2, depth))
         safe_limit = max(10, min(300, limit))
+        rel_pattern = self._content_rel_pattern(include_core=True)
         node_ids_query = f"""
         MATCH (seed)
         WHERE elementId(seed) = $node_id
-        MATCH path = (seed)-[:WRITTEN_BY|MENTIONS|BELONGS_TO|RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS*0..{safe_depth}]-(n)
+        MATCH path = (seed)-[{rel_pattern}*0..{safe_depth}]-(n)
         WITH collect(DISTINCT elementId(n)) AS node_ids
         RETURN node_ids[..$limit] AS node_ids
         """
@@ -341,7 +420,7 @@ class GraphRepository:
                     "id": row["id"],
                     "label": row["props"].get("title") or row["props"].get("name") or "Unknown",
                     "type": (row["labels"][0].lower() if row["labels"] else "unknown"),
-                    "relation": row.get("relation"),
+                    "properties": self._to_json_safe(row["props"]),
                 }
                 for row in session.run(neighbors_query, node_id=node_id).data()
                 if row.get("id")
@@ -355,6 +434,56 @@ class GraphRepository:
                 "neighbors": neighbors,
             }
 
+    def list_items(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List all books and papers with their metadata."""
+        query = """
+        MATCH (n)
+        WHERE n:Book OR n:Paper
+        OPTIONAL MATCH (n)-[:WRITTEN_BY]->(a:Author)
+        RETURN elementId(n) AS id, labels(n)[0] AS type, n.title AS title, 
+               coalesce(a.name, "Unknown") AS author, n.publish_year AS publish_year
+        ORDER BY n.publish_year DESC, n.title ASC
+        LIMIT $limit
+        """
+        with self._driver.session() as session:
+            return session.run(query, limit=limit).data()
+
+    def delete_node(self, node_id: str) -> bool:
+        """
+        Delete a node and its relationships by its elementId.
+        Safety check: only delete Book, Paper, Author, Concept, or Field nodes.
+        """
+        query = """
+        MATCH (n)
+        WHERE elementId(n) = $node_id
+          AND (n:Book OR n:Paper OR n:Author OR n:Concept OR n:Field)
+        DETACH DELETE n
+        RETURN count(n) AS deleted_count
+        """
+        with self._driver.session() as session:
+            result = session.run(query, node_id=node_id).single()
+            return (result["deleted_count"] > 0) if result else False
+
+    def execute_read_query(self, query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """
+        Execute a read-only Cypher query and return the results as a list of dictionaries.
+        Basic safety check to prevent write operations.
+        """
+        forbidden = {"CREATE", "MERGE", "DELETE", "SET", "REMOVE", "DROP", "CALL"}
+        # Case-insensitive check for forbidden keywords
+        upper_query = query.upper()
+        for word in forbidden:
+            if word in upper_query:
+                # Basic check: ensure it's not a substring of a label or property
+                # This is a heuristic; real safety should come from DB user permissions.
+                import re
+                if re.search(rf"\b{word}\b", upper_query):
+                    raise ValueError(f"Forbidden keyword '{word}' detected in query.")
+
+        with self._driver.session() as session:
+            result = session.run(query, params or {})
+            return [record.data() for record in result]
+
     def _to_json_safe(self, value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
@@ -365,12 +494,12 @@ class GraphRepository:
         # Handles Neo4j temporal and other driver-specific types
         return str(value)
 
-    def get_central_books(self, limit: int = 5) -> list[dict[str, Any]]:
+    def get_central_items(self, limit: int = 5) -> list[dict[str, Any]]:
         gds_query = """
         CALL gds.graph.project.cypher(
-            'bookGraph',
-            'MATCH (b:Book) RETURN id(b) AS id',
-            'MATCH (a:Book)-[r]->(b:Book) RETURN id(a) AS source, id(b) AS target'
+            'itemGraph',
+            'MATCH (i) WHERE i:Book OR i:Paper RETURN id(i) AS id',
+            'MATCH (a)-[r]->(b) WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper) RETURN id(a) AS source, id(b) AS target'
         )
         YIELD graphName
         CALL gds.pageRank.stream(graphName)
@@ -379,16 +508,18 @@ class GraphRepository:
         ORDER BY score DESC
         LIMIT $limit
         """
-        cleanup_query = "CALL gds.graph.drop('bookGraph', false)"
+        cleanup_query = "CALL gds.graph.drop('itemGraph', false)"
         fallback_query = """
-        MATCH (b:Book)
-        OPTIONAL MATCH (b)-[r]-(:Book)
-        WITH b, count(r) AS bookLinks
-        OPTIONAL MATCH (b)-[:MENTIONS]->(c:Concept)
-        WITH b, bookLinks, count(DISTINCT c) AS conceptLinks
-        OPTIONAL MATCH (b)-[:BELONGS_TO]->(f:Field)
-        WITH b, bookLinks, conceptLinks, count(DISTINCT f) AS fieldLinks
-        RETURN b.title AS title, (bookLinks * 2.0 + conceptLinks * 1.0 + fieldLinks * 0.8) AS score
+        MATCH (i)
+        WHERE i:Book OR i:Paper
+        OPTIONAL MATCH (i)-[r]-(j)
+        WHERE j:Book OR j:Paper
+        WITH i, count(r) AS itemLinks
+        OPTIONAL MATCH (i)-[:MENTIONS]->(c:Concept)
+        WITH i, itemLinks, count(DISTINCT c) AS conceptLinks
+        OPTIONAL MATCH (i)-[:BELONGS_TO]->(f:Field)
+        WITH i, itemLinks, conceptLinks, count(DISTINCT f) AS fieldLinks
+        RETURN i.title AS title, (itemLinks * 2.0 + conceptLinks * 1.0 + fieldLinks * 0.8) AS score
         ORDER BY score DESC
         LIMIT $limit
         """
@@ -405,20 +536,21 @@ class GraphRepository:
         gds_query = """
         CALL gds.graph.project.cypher(
             'clusterGraph',
-            'MATCH (b:Book) RETURN id(b) AS id',
-            'MATCH (a:Book)-[r]->(b:Book) RETURN id(a) AS source, id(b) AS target'
+            'MATCH (i) WHERE i:Book OR i:Paper RETURN id(i) AS id',
+            'MATCH (a)-[r]->(b) WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper) RETURN id(a) AS source, id(b) AS target'
         )
         YIELD graphName
         CALL gds.louvain.stream(graphName)
         YIELD nodeId, communityId
-        RETURN communityId, collect(gds.util.asNode(nodeId).title) AS books
-        ORDER BY size(books) DESC
+        RETURN communityId, collect(gds.util.asNode(nodeId).title) AS items
+        ORDER BY size(items) DESC
         """
         cleanup_query = "CALL gds.graph.drop('clusterGraph', false)"
         fallback_query = """
-        MATCH (b:Book)-[:BELONGS_TO]->(f:Field)
-        RETURN f.name AS communityId, collect(DISTINCT b.title) AS books
-        ORDER BY size(books) DESC
+        MATCH (i)-[:BELONGS_TO]->(f:Field)
+        WHERE i:Book OR i:Paper
+        RETURN f.name AS communityId, collect(DISTINCT i.title) AS items
+        ORDER BY size(items) DESC
         """
 
         with self._driver.session() as session:
@@ -432,88 +564,128 @@ class GraphRepository:
     def detect_missing_topics(self, threshold: int = 1) -> list[dict[str, Any]]:
         query = """
         MATCH (f:Field)
-        OPTIONAL MATCH (b:Book)-[:BELONGS_TO]->(f)
-        WITH f.name AS field, count(DISTINCT b) AS bookCount
-        WHERE bookCount <= $threshold
-        RETURN field, bookCount
-        ORDER BY bookCount ASC, field ASC
+        OPTIONAL MATCH (i)-[:BELONGS_TO]->(f)
+        WHERE i:Book OR i:Paper
+        WITH f.name AS field, count(DISTINCT i) AS itemCount
+        WHERE itemCount <= $threshold
+        RETURN field, itemCount
+        ORDER BY itemCount ASC, field ASC
         """
         with self._driver.session() as session:
             return session.run(query, threshold=threshold).data()
 
     def get_graph_stats(self) -> dict[str, Any]:
         query = """
-        OPTIONAL MATCH (b:Book)
-        WITH count(DISTINCT b) AS books
+        OPTIONAL MATCH (i)
+        WHERE i:Book OR i:Paper
+        WITH count(DISTINCT i) AS items
         OPTIONAL MATCH (a:Author)
-        WITH books, count(DISTINCT a) AS authors
+        WITH items, count(DISTINCT a) AS authors
         OPTIONAL MATCH (c:Concept)
-        WITH books, authors, count(DISTINCT c) AS concepts
+        WITH items, authors, count(DISTINCT c) AS concepts
         OPTIONAL MATCH (f:Field)
-        WITH books, authors, concepts, count(DISTINCT f) AS fields
-        OPTIONAL MATCH (:Book)-[r]->(:Book)
-        WITH books, authors, concepts, fields, count(DISTINCT r) AS bookEdges
-        RETURN books, authors, concepts, fields, bookEdges
+        WITH items, authors, concepts, count(DISTINCT f) AS fields
+        OPTIONAL MATCH (a)-[r]->(b)
+        WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper)
+        WITH items, authors, concepts, fields, count(DISTINCT r) AS itemEdges
+        RETURN items, authors, concepts, fields, itemEdges
         """
         with self._driver.session() as session:
             row = session.run(query).single()
             if not row:
                 return {
-                    "books": 0,
+                    "items": 0,
                     "authors": 0,
                     "concepts": 0,
                     "fields": 0,
-                    "book_edges": 0,
-                    "book_relationship_density": 0.0,
+                    "item_edges": 0,
+                    "item_relationship_density": 0.0,
                 }
-            books = int(row["books"] or 0)
-            edges = int(row["bookEdges"] or 0)
-            max_directed_edges = max(1, books * max(books - 1, 1))
-            density = float(edges / max_directed_edges) if books > 1 else 0.0
+            items = int(row["items"] or 0)
+            edges = int(row["itemEdges"] or 0)
+            max_directed_edges = max(1, items * max(items - 1, 1))
+            density = float(edges / max_directed_edges) if items > 1 else 0.0
             return {
-                "books": books,
+                "items": items,
                 "authors": int(row["authors"] or 0),
                 "concepts": int(row["concepts"] or 0),
                 "fields": int(row["fields"] or 0),
-                "book_edges": edges,
-                "book_relationship_density": round(density, 4),
+                "item_edges": edges,
+                "item_relationship_density": round(density, 4),
             }
 
+    # Fields to suppress from the Decision Dashboard — these are OpenLibrary subject
+    # tags that are software/tool names rather than academic fields.
+    _FIELD_BLOCKLIST: frozenset[str] = frozenset(
+        {
+            "github", "git", "open source", "open-source", "opensource",
+            "python", "javascript", "typescript", "java", "c++", "c#", "go",
+            "rust", "ruby", "swift", "kotlin", "php", "scala", "r language",
+            "linux", "unix", "windows", "macos", "android", "ios",
+            "docker", "kubernetes", "aws", "azure", "gcp", "cloud computing",
+            "software engineering", "software development", "programming",
+            "web development", "frontend", "backend", "full stack",
+        }
+    )
+
     def get_field_coverage(self, limit: int = 10) -> list[dict[str, Any]]:
+        # Build an inline list for the Cypher WHERE NOT IN clause
+        blocklist_param = list(self._FIELD_BLOCKLIST)
         query = """
         MATCH (f:Field)
-        OPTIONAL MATCH (b:Book)-[:BELONGS_TO]->(f)
-        RETURN f.name AS field, count(DISTINCT b) AS bookCount
-        ORDER BY bookCount DESC, field ASC
+        WHERE NOT toLower(f.name) IN $blocklist
+        OPTIONAL MATCH (i)-[:BELONGS_TO]->(f)
+        WHERE i:Book OR i:Paper
+        RETURN f.name AS field, count(DISTINCT i) AS itemCount
+        ORDER BY itemCount DESC, field ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
-            return session.run(query, limit=limit).data()
+            return session.run(query, limit=limit, blocklist=blocklist_param).data()
 
     def get_top_concepts(self, limit: int = 10) -> list[dict[str, Any]]:
         query = """
-        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)
-        RETURN c.name AS concept, count(DISTINCT b) AS bookCount
-        ORDER BY bookCount DESC, concept ASC
+        MATCH (c:Concept)<-[:MENTIONS]-(i)
+        WHERE i:Book OR i:Paper
+        RETURN c.name AS concept, count(DISTINCT i) AS itemCount
+        ORDER BY itemCount DESC, concept ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
             return session.run(query, limit=limit).data()
 
-    def get_unlinked_books(self, limit: int = 10) -> list[dict[str, Any]]:
-        query = """
-        MATCH (b:Book)
-        WHERE NOT (b)-[:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
-        RETURN b.title AS title, b.publish_year AS publish_year
-        ORDER BY coalesce(b.publish_year, 9999) ASC, b.title ASC
-        LIMIT $limit
-        """
+    def get_unlinked_items(self, limit: int = 10) -> list[dict[str, Any]]:
+        content_rels = sorted(self._content_rel_types())
+        if not content_rels:
+            # No content-to-content relationships exist yet — every item is "unlinked".
+            query = """
+            MATCH (i)
+            WHERE i:Book OR i:Paper
+            RETURN i.title AS title, i.publish_year AS publish_year
+            ORDER BY coalesce(i.publish_year, 9999) ASC, i.title ASC
+            LIMIT $limit
+            """
+        else:
+            rel_str = ":".join(content_rels)
+            query = f"""
+            MATCH (i)
+            WHERE i:Book OR i:Paper
+            AND NOT (i)-[{rel_str}]-(:Book) AND NOT (i)-[{rel_str}]-(:Paper)
+            RETURN i.title AS title, i.publish_year AS publish_year
+            ORDER BY coalesce(i.publish_year, 9999) ASC, i.title ASC
+            LIMIT $limit
+            """
         with self._driver.session() as session:
             return session.run(query, limit=limit).data()
 
-    def get_book_relationship_edges(self, limit: int = 30) -> list[dict[str, Any]]:
-        query = """
-        MATCH (a:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(b:Book)
+    def get_relationship_edges(self, limit: int = 30) -> list[dict[str, Any]]:
+        content_rels = sorted(self._content_rel_types())
+        if not content_rels:
+            return []
+        rel_str = ":".join(content_rels)
+        query = f"""
+        MATCH (a)-[r{rel_str}]->(b)
+        WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper)
         RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target, type(r) AS type
         ORDER BY type(r) ASC
         LIMIT $limit
@@ -521,13 +693,14 @@ class GraphRepository:
         with self._driver.session() as session:
             return session.run(query, limit=limit).data()
 
-    def get_book_nodes_by_titles(self, titles: list[str]) -> list[dict[str, Any]]:
+    def get_nodes_by_titles(self, titles: list[str]) -> list[dict[str, Any]]:
         if not titles:
             return []
         query = """
         UNWIND $titles AS title
-        MATCH (b:Book {title: title})
-        RETURN elementId(b) AS id, b.title AS label, 'book' AS type
+        MATCH (i)
+        WHERE i.title = title AND (i:Book OR i:Paper)
+        RETURN elementId(i) AS id, i.title AS label, labels(i)[0] AS type
         """
         with self._driver.session() as session:
             return session.run(query, titles=titles).data()
@@ -555,16 +728,20 @@ class GraphRepository:
             return session.run(query, concepts=concepts).data()
 
     def get_field_reading_paths(self, limit_fields: int = 4, path_len: int = 4) -> list[dict[str, Any]]:
-        query = """
-        MATCH (f:Field)<-[:BELONGS_TO]-(b:Book)
-        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
-        WITH f, b, count(DISTINCT r) AS relScore
-        ORDER BY f.name ASC, relScore DESC, coalesce(b.publish_year, 9999) ASC
-        WITH f, collect({
-            title: b.title,
-            publish_year: b.publish_year,
+        rel_pattern = self._content_rel_pattern()
+        optional_match = f"OPTIONAL MATCH (i)-[r{rel_pattern}]-(j) WHERE j:Book OR j:Paper" if rel_pattern else "WITH i, 0 AS _skip"
+        score_expr = "count(DISTINCT r) AS relScore" if rel_pattern else "0 AS relScore"
+        query = f"""
+        MATCH (f:Field)<-[:BELONGS_TO]-(i)
+        WHERE i:Book OR i:Paper
+        {optional_match}
+        WITH f, i, {score_expr}
+        ORDER BY f.name ASC, relScore DESC, coalesce(i.publish_year, 9999) ASC
+        WITH f, collect({{
+            title: i.title,
+            publish_year: i.publish_year,
             score: relScore
-        })[..$path_len] AS path
+        }})[..$path_len] AS path
         WHERE size(path) >= 2
         RETURN f.name AS field, path
         ORDER BY size(path) DESC, field ASC
@@ -574,14 +751,25 @@ class GraphRepository:
             return session.run(query, limit_fields=limit_fields, path_len=path_len).data()
 
     def get_overlap_contradiction_summary(self) -> dict[str, Any]:
-        query = """
-        MATCH (:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(:Book)
+        content_rels = sorted(self._content_rel_types())
+        if not content_rels:
+            return {"overlap_count": 0, "contradiction_count": 0, "samples": []}
+        rel_str = ":".join(content_rels)
+        has_contradicts = "CONTRADICTS" in content_rels
+        overlap_types = [r for r in content_rels if r != "CONTRADICTS"]
+        overlap_check = (
+            f"type(r) IN {overlap_types!r}" if overlap_types else "false"
+        )
+        query = f"""
+        MATCH (a)-[r{rel_str}]->(b)
+        WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper)
         RETURN
-            count(CASE WHEN type(r) IN ['RELATED_TO', 'INFLUENCED_BY', 'EXPANDS'] THEN 1 END) AS overlapCount,
+            count(CASE WHEN {overlap_check} THEN 1 END) AS overlapCount,
             count(CASE WHEN type(r) = 'CONTRADICTS' THEN 1 END) AS contradictionCount
         """
-        sample_query = """
-        MATCH (a:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]->(b:Book)
+        sample_query = f"""
+        MATCH (a)-[r{rel_str}]->(b)
+        WHERE (a:Book OR a:Paper) AND (b:Book OR b:Paper)
         RETURN a.title AS source, type(r) AS relation, b.title AS target
         ORDER BY CASE type(r) WHEN 'CONTRADICTS' THEN 0 ELSE 1 END ASC, a.title ASC
         LIMIT 12
@@ -596,27 +784,33 @@ class GraphRepository:
             }
 
     def detect_sparse_bridges(self, limit: int = 8, max_fields: int = 10) -> list[dict[str, Any]]:
-        query = """
-        MATCH (f:Field)<-[:BELONGS_TO]-(b:Book)
-        WITH f, count(DISTINCT b) AS bookCount
-        WHERE bookCount > 0
-        ORDER BY bookCount DESC, f.name ASC
+        content_rels = sorted(self._content_rel_types())
+        if not content_rels:
+            return []
+        rel_str = ":".join(content_rels)
+        query = f"""
+        MATCH (f:Field)<-[:BELONGS_TO]-(i)
+        WHERE i:Book OR i:Paper
+        WITH f, count(DISTINCT i) AS itemCount
+        WHERE itemCount > 0
+        ORDER BY itemCount DESC, f.name ASC
         LIMIT $max_fields
-        WITH collect({name: f.name, count: bookCount}) AS fieldRows
+        WITH collect({{name: f.name, count: itemCount}}) AS fieldRows
         UNWIND fieldRows AS fa
         UNWIND fieldRows AS fb
         WITH fa, fb
         WHERE fa.name < fb.name
-        CALL {
+        CALL {{
             WITH fa, fb
-            MATCH (x:Book)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(y:Book)
-            WHERE (x)-[:BELONGS_TO]->(:Field {name: fa.name})
-              AND (y)-[:BELONGS_TO]->(:Field {name: fb.name})
+            MATCH (x)-[r{rel_str}]-(y)
+            WHERE (x:Book OR x:Paper) AND (y:Book OR y:Paper)
+              AND (x)-[:BELONGS_TO]->(:Field {{name: fa.name}})
+              AND (y)-[:BELONGS_TO]->(:Field {{name: fb.name}})
             RETURN count(DISTINCT r) AS crossLinks
-        }
+        }}
         WITH fa, fb, crossLinks
         WHERE crossLinks = 0
-        RETURN fa.name AS field_a, fb.name AS field_b, fa.count AS books_a, fb.count AS books_b
+        RETURN fa.name AS field_a, fb.name AS field_b, fa.count AS items_a, fb.count AS items_b
         ORDER BY (fa.count + fb.count) DESC, field_a ASC, field_b ASC
         LIMIT $limit
         """
@@ -629,40 +823,52 @@ class GraphRepository:
         with self._driver.session() as session:
             for field in top_fields:
                 field_name = field["field"]
-                books_query = """
-                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)
-                OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
-                RETURN b.title AS title, b.publish_year AS publish_year, count(DISTINCT r) AS relationCount
-                ORDER BY relationCount DESC, coalesce(b.publish_year, 9999) ASC, title ASC
+                rel_pattern = self._content_rel_pattern()
+                items_query = f"""
+                MATCH (f:Field {{name: $field_name}})<-[:BELONGS_TO]-(i)
+                WHERE i:Book OR i:Paper
+                {f'OPTIONAL MATCH (i)-[r{rel_pattern}]-(j) WHERE j:Book OR j:Paper' if rel_pattern else 'WITH i, null AS r'}
+                RETURN i.title AS title, i.publish_year AS publish_year, count(DISTINCT r) AS relationCount
+                ORDER BY relationCount DESC, coalesce(i.publish_year, 9999) ASC, title ASC
                 LIMIT 5
                 """
                 concepts_query = """
-                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)-[:MENTIONS]->(c:Concept)
-                RETURN c.name AS concept, count(DISTINCT b) AS bookCount
-                ORDER BY bookCount DESC, concept ASC
+                MATCH (f:Field {{name: $field_name}})<-[:BELONGS_TO]-(i)-[:MENTIONS]->(c:Concept)
+                WHERE i:Book OR i:Paper
+                RETURN c.name AS concept, count(DISTINCT i) AS itemCount
+                ORDER BY itemCount DESC, concept ASC
                 LIMIT 5
                 """
-                isolated_query = """
-                MATCH (f:Field {name: $field_name})<-[:BELONGS_TO]-(b:Book)
-                WHERE NOT (b)-[:RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(:Book)
-                RETURN b.title AS title
-                ORDER BY title ASC
-                LIMIT 5
-                """
-                top_books = session.run(books_query, field_name=field_name).data()
+                if rel_pattern:
+                    isolated_query = f"""
+                    MATCH (f:Field {{name: $field_name}})<-[:BELONGS_TO]-(i)
+                    WHERE (i:Book OR i:Paper) AND NOT (i)-[{rel_pattern}]-(:Book) AND NOT (i)-[{rel_pattern}]-(:Paper)
+                    RETURN i.title AS title
+                    ORDER BY title ASC
+                    LIMIT 5
+                    """
+                else:
+                    isolated_query = """
+                    MATCH (f:Field {{name: $field_name}})<-[:BELONGS_TO]-(i)
+                    WHERE i:Book OR i:Paper
+                    RETURN i.title AS title
+                    ORDER BY title ASC
+                    LIMIT 5
+                    """
+                top_items = session.run(items_query, field_name=field_name).data()
                 top_concepts = session.run(concepts_query, field_name=field_name).data()
-                isolated_books = session.run(isolated_query, field_name=field_name).data()
+                isolated_items = session.run(isolated_query, field_name=field_name).data()
                 unanswered_questions = [
-                    f"Which book can bridge '{field_name}' to adjacent fields?",
+                    f"Which item can bridge '{field_name}' to adjacent fields?",
                     f"Are there contradictory viewpoints within '{field_name}'?",
                 ]
                 dashboards.append(
                     {
                         "field": field_name,
-                        "book_count": field["bookCount"],
-                        "top_books": top_books,
+                        "item_count": field["itemCount"],
+                        "top_items": top_items,
                         "top_concepts": top_concepts,
-                        "isolated_books": isolated_books,
+                        "isolated_items": isolated_items,
                         "unanswered_questions": unanswered_questions,
                     }
                 )
@@ -672,12 +878,12 @@ class GraphRepository:
         query = """
         MATCH (s:InsightSnapshot)
         RETURN s.created_at AS created_at,
-               s.books AS books,
+               s.items AS items,
                s.authors AS authors,
                s.concepts AS concepts,
                s.fields AS fields,
-               s.book_edges AS book_edges,
-               s.book_relationship_density AS book_relationship_density,
+               s.item_edges AS item_edges,
+               s.item_relationship_density AS item_relationship_density,
                s.overall_score AS overall_score
         ORDER BY s.created_at DESC
         LIMIT $limit
@@ -690,12 +896,12 @@ class GraphRepository:
                 normalized.append(
                     {
                         "created_at": str(created_at),
-                        "books": int(row.get("books") or 0),
+                        "items": int(row.get("items") or 0),
                         "authors": int(row.get("authors") or 0),
                         "concepts": int(row.get("concepts") or 0),
                         "fields": int(row.get("fields") or 0),
-                        "book_edges": int(row.get("book_edges") or 0),
-                        "book_relationship_density": float(row.get("book_relationship_density") or 0.0),
+                        "item_edges": int(row.get("item_edges") or 0),
+                        "item_relationship_density": float(row.get("item_relationship_density") or 0.0),
                         "overall_score": int(row.get("overall_score") or 0),
                     }
                 )
@@ -706,30 +912,31 @@ class GraphRepository:
         CREATE (s:InsightSnapshot {
             id: randomUUID(),
             created_at: datetime(),
-            books: $books,
+            items: $items,
             authors: $authors,
             concepts: $concepts,
             fields: $fields,
-            book_edges: $book_edges,
-            book_relationship_density: $book_relationship_density,
+            item_edges: $item_edges,
+            item_relationship_density: $item_relationship_density,
             overall_score: $overall_score
         })
         """
         with self._driver.session() as session:
             session.run(
                 query,
-                books=int(stats.get("books", 0)),
+                items=int(stats.get("items", 0)),
                 authors=int(stats.get("authors", 0)),
                 concepts=int(stats.get("concepts", 0)),
                 fields=int(stats.get("fields", 0)),
-                book_edges=int(stats.get("book_edges", 0)),
-                book_relationship_density=float(stats.get("book_relationship_density", 0.0)),
+                item_edges=int(stats.get("item_edges", 0)),
+                item_relationship_density=float(stats.get("item_relationship_density", 0.0)),
                 overall_score=int(overall_score),
             ).consume()
 
     def get_cross_field_concepts(self, limit: int = 10) -> list[dict[str, Any]]:
         query = """
-        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)-[:BELONGS_TO]->(f:Field)
+        MATCH (c:Concept)<-[:MENTIONS]-(i)-[:BELONGS_TO]->(f:Field)
+        WHERE i:Book OR i:Paper
         WITH c, collect(DISTINCT f.name) AS fields, count(DISTINCT f) AS fieldCount
         WHERE fieldCount >= 2
         RETURN c.name AS concept, fields, fieldCount
@@ -740,19 +947,38 @@ class GraphRepository:
             return session.run(query, limit=limit).data()
 
     def get_concept_reading_paths(self, limit_concepts: int = 8, path_len: int = 4) -> list[dict[str, Any]]:
-        query = """
-        MATCH (c:Concept)<-[:MENTIONS]-(b:Book)
-        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|EXPANDS]-(:Book)
-        WITH c, b, count(DISTINCT r) AS relationScore
-        ORDER BY c.name ASC, relationScore DESC, coalesce(b.publish_year, 9999) ASC, b.title ASC
+        rel_pattern = self._content_rel_pattern()
+        if not rel_pattern:
+            query = """
+        MATCH (c:Concept)<-[:MENTIONS]-(i)
+        WHERE i:Book OR i:Paper
+        WITH c, i, 0 AS relationScore
+        ORDER BY c.name ASC, coalesce(i.publish_year, 9999) ASC, i.title ASC
         WITH c, collect({
-            title: b.title,
-            publish_year: b.publish_year,
+            title: i.title,
+            publish_year: i.publish_year,
             relation_score: relationScore
-        })[..$path_len] AS books
-        WHERE size(books) >= 2
-        RETURN c.name AS concept, books
-        ORDER BY size(books) DESC, concept ASC
+        })[..$path_len] AS items
+        WHERE size(items) >= 2
+        RETURN c.name AS concept, items
+        ORDER BY size(items) DESC, concept ASC
+        LIMIT $limit_concepts
+        """
+        else:
+            query = f"""
+        MATCH (c:Concept)<-[:MENTIONS]-(i)
+        WHERE i:Book OR i:Paper
+        OPTIONAL MATCH (i)-[r{rel_pattern}]-(j) WHERE j:Book OR j:Paper
+        WITH c, i, count(DISTINCT r) AS relationScore
+        ORDER BY c.name ASC, relationScore DESC, coalesce(i.publish_year, 9999) ASC, i.title ASC
+        WITH c, collect({{
+            title: i.title,
+            publish_year: i.publish_year,
+            relation_score: relationScore
+        }})[..$path_len] AS items
+        WHERE size(items) >= 2
+        RETURN c.name AS concept, items
+        ORDER BY size(items) DESC, concept ASC
         LIMIT $limit_concepts
         """
         with self._driver.session() as session:
@@ -761,7 +987,7 @@ class GraphRepository:
     def save_reading_path(
         self,
         concept: str,
-        books: list[str],
+        items: list[str],
         explanation: str,
         signature: str,
     ) -> dict[str, Any]:
@@ -769,12 +995,12 @@ class GraphRepository:
         MERGE (r:ReadingPath {signature: $signature})
         ON CREATE SET r.id = randomUUID(), r.created_at = datetime()
         SET r.concept = $concept,
-            r.books = $books,
+            r.items = $items,
             r.explanation = $explanation,
             r.updated_at = datetime()
         RETURN r.id AS id,
                r.concept AS concept,
-               r.books AS books,
+               r.items AS items,
                r.explanation AS explanation,
                r.created_at AS created_at
         """
@@ -782,7 +1008,7 @@ class GraphRepository:
             row = session.run(
                 query,
                 concept=concept,
-                books=books,
+                items=items,
                 explanation=explanation,
                 signature=signature,
             ).single()
@@ -790,14 +1016,14 @@ class GraphRepository:
                 return {
                     "id": "",
                     "concept": concept,
-                    "books": books,
+                    "items": items,
                     "explanation": explanation,
                     "created_at": "",
                 }
             return {
                 "id": str(row.get("id") or ""),
                 "concept": str(row.get("concept") or concept),
-                "books": [str(book) for book in (row.get("books") or [])],
+                "items": [str(item) for item in (row.get("items") or [])],
                 "explanation": str(row.get("explanation") or explanation),
                 "created_at": str(row.get("created_at") or ""),
             }
@@ -806,7 +1032,7 @@ class GraphRepository:
         query = """
         MATCH (r:ReadingPath)
         RETURN r.concept AS concept,
-               r.books AS books,
+               r.items AS items,
                r.explanation AS explanation,
                r.created_at AS created_at
         ORDER BY r.created_at DESC
@@ -817,23 +1043,24 @@ class GraphRepository:
             return [
                 {
                     "concept": str(row.get("concept") or ""),
-                    "books": [str(book) for book in (row.get("books") or [])],
+                    "items": [str(item) for item in (row.get("items") or [])],
                     "explanation": str(row.get("explanation") or ""),
                     "created_at": str(row.get("created_at") or ""),
                 }
                 for row in rows
             ]
 
-    def get_books_for_fields(self, fields: list[str], limit: int = 5) -> list[str]:
+    def get_items_for_fields(self, fields: list[str], limit: int = 5) -> list[str]:
         if not fields:
             return []
         query = """
         UNWIND $fields AS field_name
-        MATCH (f:Field {name: field_name})<-[:BELONGS_TO]-(b:Book)
-        OPTIONAL MATCH (b)-[r:RELATED_TO|INFLUENCED_BY|EXPANDS]-(:Book)
-        WITH b, count(DISTINCT r) AS relationScore
-        RETURN b.title AS title
-        ORDER BY relationScore DESC, coalesce(b.publish_year, 9999) ASC, title ASC
+        MATCH (f:Field {name: field_name})<-[:BELONGS_TO]-(i)
+        WHERE i:Book OR i:Paper
+        OPTIONAL MATCH (i)-[r:RELATED_TO|INFLUENCED_BY|EXPANDS]-(j) WHERE j:Book OR j:Paper
+        WITH i, count(DISTINCT r) AS relationScore
+        RETURN i.title AS title
+        ORDER BY relationScore DESC, coalesce(i.publish_year, 9999) ASC, title ASC
         LIMIT $limit
         """
         with self._driver.session() as session:
@@ -844,7 +1071,7 @@ class GraphRepository:
         self,
         gap: str,
         reason: str,
-        candidate_books: list[str],
+        candidate_items: list[str],
         signature: str,
     ) -> dict[str, Any]:
         query = """
@@ -852,12 +1079,12 @@ class GraphRepository:
         ON CREATE SET k.id = randomUUID(), k.created_at = datetime()
         SET k.gap = $gap,
             k.reason = $reason,
-            k.candidate_books = $candidate_books,
+            k.candidate_items = $candidate_items,
             k.updated_at = datetime()
         RETURN k.id AS id,
                k.gap AS gap,
                k.reason AS reason,
-               k.candidate_books AS candidate_books,
+               k.candidate_items AS candidate_items,
                k.created_at AS created_at
         """
         with self._driver.session() as session:
@@ -865,7 +1092,7 @@ class GraphRepository:
                 query,
                 gap=gap,
                 reason=reason,
-                candidate_books=candidate_books,
+                candidate_items=candidate_items,
                 signature=signature,
             ).single()
             if not row:
@@ -873,14 +1100,14 @@ class GraphRepository:
                     "id": "",
                     "gap": gap,
                     "reason": reason,
-                    "candidate_books": candidate_books,
+                    "candidate_items": candidate_items,
                     "created_at": "",
                 }
             return {
                 "id": str(row.get("id") or ""),
                 "gap": str(row.get("gap") or gap),
                 "reason": str(row.get("reason") or reason),
-                "candidate_books": [str(book) for book in (row.get("candidate_books") or [])],
+                "candidate_items": [str(item) for item in (row.get("candidate_items") or [])],
                 "created_at": str(row.get("created_at") or ""),
             }
 
@@ -889,7 +1116,7 @@ class GraphRepository:
         MATCH (k:KnowledgeGap)
         RETURN k.gap AS gap,
                k.reason AS reason,
-               k.candidate_books AS candidate_books,
+               k.candidate_items AS candidate_items,
                k.created_at AS created_at
         ORDER BY k.created_at DESC
         LIMIT $limit
@@ -900,7 +1127,7 @@ class GraphRepository:
                 {
                     "gap": str(row.get("gap") or ""),
                     "reason": str(row.get("reason") or ""),
-                    "candidate_books": [str(book) for book in (row.get("candidate_books") or [])],
+                    "candidate_items": [str(item) for item in (row.get("candidate_items") or [])],
                     "created_at": str(row.get("created_at") or ""),
                 }
                 for row in rows
@@ -1138,9 +1365,10 @@ class GraphRepository:
             seed_ids = [row["id"] for row in session.run(seed_query, params).data()] if terms else []
             if not seed_ids:
                 fallback_query = """
-                MATCH (b:Book)
-                RETURN elementId(b) AS id
-                ORDER BY coalesce(b.publish_year, 9999) ASC, b.title ASC
+                MATCH (i)
+                WHERE i:Book OR i:Paper
+                RETURN elementId(i) AS id
+                ORDER BY coalesce(i.publish_year, 9999) ASC, i.title ASC
                 LIMIT $k
                 """
                 seed_ids = [row["id"] for row in session.run(fallback_query, k=k).data()]
@@ -1148,12 +1376,26 @@ class GraphRepository:
             if not seed_ids:
                 return {"nodes": [], "edges": []}
 
-            neighborhood_query = """
+            rel_pattern = self._content_rel_pattern(include_core=True)
+            if rel_pattern:
+                neighborhood_query = f"""
             UNWIND $seed_ids AS sid
             MATCH (s)
             WHERE elementId(s) = sid
-            OPTIONAL MATCH (s)-[:WRITTEN_BY|MENTIONS|BELONGS_TO|RELATED_TO|INFLUENCED_BY|CONTRADICTS|EXPANDS]-(n)
+            OPTIONAL MATCH (s)-[{rel_pattern}]-(n)
             WITH collect(DISTINCT elementId(s)) + collect(DISTINCT elementId(n)) AS rawNodeIds
+            UNWIND rawNodeIds AS nodeId
+            WITH DISTINCT nodeId
+            WHERE nodeId IS NOT NULL
+            RETURN nodeId
+            LIMIT $node_limit
+            """
+            else:
+                neighborhood_query = """
+            UNWIND $seed_ids AS sid
+            MATCH (s)
+            WHERE elementId(s) = sid
+            WITH collect(DISTINCT elementId(s)) AS rawNodeIds
             UNWIND rawNodeIds AS nodeId
             WITH DISTINCT nodeId
             WHERE nodeId IS NOT NULL
