@@ -4,6 +4,8 @@ BookGraph turns your reading list and research papers into a dynamic knowledge g
 
 It ingests books and documents, extracts concepts using LLM-backed agents, builds structural relationships in Neo4j, and lets you interact with your knowledge through a real-time neural-map and streaming AI chat.
 
+https://github.com/user-attachments/assets/3bebbfb4-49f2-4681-ac54-cbd4276cca67
+
 ## What The App Does
 
 1. **Multi-Modal Ingestion:** Add items from Open Library, Google Books, arXiv, or upload local PDFs.
