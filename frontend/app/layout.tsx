@@ -4,7 +4,10 @@ import ClientLayout from "./ClientLayout";
 
 export const metadata: Metadata = {
   title: "BookGraph",
-  description: "AI Knowledge Graph for books, concepts, and relationships"
+  description: "AI Knowledge Graph for books, concepts, and relationships",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

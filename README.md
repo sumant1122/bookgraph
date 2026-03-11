@@ -1,32 +1,32 @@
 # BookGraph
 
-BookGraph turns your reading list into a knowledge graph and an AI discovery engine.
+BookGraph turns your reading list and research papers into a dynamic knowledge globe and an AI-powered discovery engine.
 
-It ingests books, extracts concepts and fields, links related titles, and continuously generates discoveries like clusters, reading paths, and knowledge gaps.
+It ingests books and documents, extracts concepts using LLM-backed agents, builds structural relationships in Neo4j, and lets you interact with your knowledge through a real-time neural-map and streaming AI chat.
 
 ## What The App Does
 
-1. Ingest a book title from Open Library metadata.
-2. Extract concepts and fields using LLM-backed agents.
-3. Build graph relationships across books.
-4. Run exploration agents on a schedule to generate insights.
-5. Let you search and explore focused subgraphs in the UI.
+1. **Multi-Modal Ingestion:** Add items from Open Library, Google Books, arXiv, or upload local PDFs.
+2. **Automated Enrichment:** LLM agents "read" metadata/PDF text to extract core concepts, fields, and bibliographic data.
+3. **Strategic Graphing:** Automatically builds relationships between new and existing items (e.g., *Influenced By*, *Contradicts*, *Expands*).
+4. **Knowledge Globe:** Visualize your entire intellectual landscape as an interactive, high-performance "galaxy" of nodes.
+5. **Queryable Intelligence:** Talk to your library using real-time streaming chat that can perform complex Cypher reasoning over the graph's structure.
 
 ## Core Features
 
-- Add books and auto-enrich them into graph nodes and edges.
-- Search-first graph exploration with node expansion and detail drawer.
-- Discovery feed with cluster and cross-field insights.
-- Reading path recommendations.
-- Knowledge gap detection with suggested bridge books.
-- Evidence-grounded graph chat.
+- **Knowledge Ingestion:** Seamless addition of books and academic papers with automated metadata extraction.
+- **Neural Globe:** High-performance canvas-based visualization of your knowledge base with organic physics.
+- **Structural Reasoning:** AI Chat that writes Cypher queries to answer structural questions (e.g., *"Find authors who wrote about both Physics and Philosophy"*).
+- **Real-time Streaming:** Token-by-token AI responses for a modern messaging experience.
+- **Discovery Engine:** Automated background detection of thematic clusters and reading paths.
+- **Resource Management:** Easily curate your graph with a "Recently Ingested" dashboard and node deletion.
 
 ## Tech Stack
 
-- Frontend: Next.js + React Flow
-- Backend: FastAPI
-- Graph DB: Neo4j
-- LLM providers: OpenAI, OpenRouter, or Ollama
+- **Frontend:** Next.js + react-force-graph-2d
+- **Backend:** FastAPI + python-multipart + PyPDF2
+- **Graph DB:** Neo4j
+- **LLM providers:** OpenAI, OpenRouter, or Ollama
 
 ## Project Structure
 
@@ -34,19 +34,19 @@ It ingests books, extracts concepts and fields, links related titles, and contin
 bookgraph/
 ├── backend/
 │   ├── app/
-│   │   ├── agents/
-│   │   ├── api/
-│   │   ├── enrichment/
-│   │   ├── graph/
-│   │   ├── ingestion/
-│   │   ├── insights/
-│   │   └── services/
+│   │   ├── agents/       # LLM Agent logic (Chat, Metadata, Relationship)
+│   │   ├── api/          # FastAPI routes and schemas
+│   │   ├── enrichment/   # Concept extraction logic
+│   │   ├── graph/        # Neo4j repository layer
+│   │   ├── ingestion/    # API clients (Google Books, Arxiv, OpenLibrary)
+│   │   └── services/     # Business logic orchestration
 │   ├── main.py
 │   └── requirements.txt
 ├── frontend/
-│   ├── app/
-│   ├── components/
-│   └── lib/
+│   ├── app/              # Next.js App Router (Ingestion, Chat, Globe)
+│   ├── components/       # Shared UI and Graph Canvas
+│   ├── public/           # Static assets (Favicon)
+│   └── lib/              # API utilities
 ├── docker/
 │   └── docker-compose.yml
 └── README.md
@@ -66,21 +66,18 @@ docker compose up --build
 - API docs: `http://localhost:8000/docs`
 - Neo4j Browser: `http://localhost:7474` (`neo4j` / `bookgraph`)
 
-### Option 2: Local dev (backend + frontend)
+### Option 2: Local dev
 
 Backend:
-
 ```bash
 cd backend
 python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-cp .env.example .env
+source .venv/bin/activate # or .venv\Scripts\activate on Windows
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Frontend (new terminal):
-
+Frontend:
 ```bash
 cd frontend
 npm install
@@ -89,82 +86,41 @@ npm run dev
 
 ## Key API Endpoints
 
-- `POST /books` add and enrich a book
-- `GET /graph/search` search nodes
-- `GET /graph/focus` fetch focused subgraph by node id
-- `GET /graph/nodes/{node_id}` get node details + neighbors
-- `GET /discoveries` list generated discovery items
-- `GET /reading-paths` list generated reading paths
-- `GET /knowledge-gaps` list generated gaps
-- `GET /insights` decision dashboard snapshot
-- `POST /chat` ask graph-grounded questions
+- `POST /books` | `POST /google-books` | `POST /papers`: Ingest resources
+- `POST /pdf`: Upload and extract metadata from local PDF
+- `GET /graph`: Fetch global snapshot for the Globe view
+- `DELETE /graph/nodes/{node_id}`: Remove specific items/nodes
+- `POST /chat/stream`: Streaming AI chat with graph context
+- `GET /discoveries`: View automated graph insights
 
 ## Graph Model
 
-Node labels:
-
-- `Book`
-- `Author`
-- `Concept`
-- `Field`
-
-Relationship types:
-
-- `WRITTEN_BY`
-- `MENTIONS`
-- `BELONGS_TO`
-- `RELATED_TO`
-- `INFLUENCED_BY`
-- `CONTRADICTS`
-- `EXPANDS`
+- **Nodes:** `Book`, `Paper`, `Author`, `Concept`, `Field`
+- **Relationships:** `WRITTEN_BY`, `MENTIONS`, `BELONGS_TO`, `RELATED_TO`, `INFLUENCED_BY`, `CONTRADICTS`, `EXPANDS`
 
 ## LLM Configuration
 
 Set provider in backend `.env`:
-
-- OpenAI: `MODEL_PROVIDER=openai` and `OPENAI_API_KEY=...`
-- OpenRouter: `MODEL_PROVIDER=openrouter` and `OPENROUTER_API_KEY=...`
-- Ollama: `MODEL_PROVIDER=ollama` and optional `OLLAMA_BASE_URL`, `OLLAMA_MODEL`
-- Auto fallback: `MODEL_PROVIDER=auto`
-
-If no provider is configured, BookGraph falls back to deterministic heuristics where possible.
+- OpenAI: `MODEL_PROVIDER=openai`
+- OpenRouter: `MODEL_PROVIDER=openrouter`
+- Ollama: `MODEL_PROVIDER=ollama`
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    UI["Next.js Frontend"] --> API["FastAPI Backend"]
-    API --> ING["Open Library Ingestion"]
-    API --> AGENTS["Concept + Relationship + Exploration Agents"]
-    AGENTS --> LLM["Pluggable LLM Layer"]
-    API --> NEO["Neo4j Graph DB"]
-    NEO --> INS["Insight and Discovery Materialization"]
-    INS --> API
+flowchart TD
+    UI["Next.js Frontend"] <--> API["FastAPI Backend"]
+    API --> INGEST["Multi-modal Ingestion (Books/PDF/Arxiv)"]
+    INGEST --> AGENTS["AI Enrichment Agents"]
+    AGENTS <--> LLM["Pluggable LLM (Streaming)"]
+    AGENTS --> NEO["Neo4j Graph DB"]
+    API <--> NEO
+    NEO --> DISC["Discovery & Exploration Jobs"]
 ```
-
-## Troubleshooting
-
-- Error: `Cannot reach backend at http://localhost:8000`
-  - Ensure backend is running on port `8000`.
-  - Verify with `curl http://localhost:8000/health`.
-  - If backend runs elsewhere, set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local`.
-
-- Error: `TypeError: got multiple values for argument 'query'`
-  - Pull latest code; this has been fixed in graph search query execution.
-
-## Contributing
-
-1. Create a branch prefixed with `codex/`.
-2. Keep business logic in services/agents, not route handlers.
-3. Add tests for behavior changes.
-4. Open a PR with sample requests/responses for new APIs.
 
 ## Future Enhancements
 
-Planned graph node types beyond books:
-
-- `Book`
-- `Paper`
-- `YouTubeVideo`
-- `Podcast`
-- `Note`
+- **PDF Full-Text Search:** Vector indexing of entire document contents.
+- **Author Influence Mapping:** Deep-dive into author citation networks.
+- **YouTube/Podcasts:** Transcribing and graphing audio-visual knowledge.
+- **Browser Extension:** One-click ingestion from Amazon or Arxiv.

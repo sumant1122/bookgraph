@@ -18,10 +18,10 @@ type ChatResponse = {
 };
 
 const SAMPLE_QUESTIONS = [
-  "Find all books that address 'Artificial Intelligence' from at least 2 different fields.",
-  "Which authors have written about both 'Physics' and 'Philosophy'?",
-  "Are there any papers that expand on concepts introduced in 'The Selfish Gene'?",
-  "Find books that have contradictory relationships with other items in the graph.",
+  "Find books addressing 'Artificial Intelligence' from multiple fields.",
+  "Which authors wrote about both 'Physics' and 'Philosophy'?",
+  "Papers that expand on concepts in 'The Selfish Gene'?",
+  "Find books with contradictory relationships in the graph.",
 ];
 
 export default function ChatPage() {
@@ -32,7 +32,6 @@ export default function ChatPage() {
   const [result, setResult] = useState<ChatResponse | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll when result updates
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: "smooth" });
@@ -59,7 +58,7 @@ export default function ChatPage() {
       }
 
       const reader = response.body?.getReader();
-      if (!reader) throw new Error("Streaming not supported in this browser.");
+      if (!reader) throw new Error("Streaming not supported.");
 
       const decoder = new TextDecoder();
       let accumulatedAnswer = "";
@@ -78,65 +77,40 @@ export default function ChatPage() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        accumulatedAnswer += chunk;
-
+        accumulatedAnswer += decoder.decode(value, { stream: true });
         setResult((prev) => prev ? { ...prev, answer: accumulatedAnswer } : null);
       }
     } catch (err) {
-      const message = formatFetchError(err, apiBase, "Unexpected error");
-      setError(message);
+      setError(formatFetchError(err, apiBase, "Unexpected error"));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="chat-container" style={{ 
+    <div style={{ 
       maxWidth: "800px", 
       margin: "0 auto", 
-      display: "flex", 
-      flexDirection: "column", 
-      height: "calc(100vh - 100px)",
-      position: "relative"
+      height: "calc(100vh - 80px)",
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--bg)"
     }}>
-      {/* Header */}
-      <div className="mb-6" style={{ textAlign: "center" }}>
-        <h1 style={{ fontSize: "1.5rem", fontWeight: 700, letterSpacing: "-0.02em" }}>Knowledge Chat</h1>
-        <p className="text-secondary" style={{ fontSize: "0.9rem" }}>Query your personal knowledge graph in natural language</p>
-      </div>
-
-      {/* Message Area */}
-      <div className="chat-messages" style={{ 
-        flex: 1, 
-        overflowY: "auto", 
-        padding: "20px 0",
-        display: "flex",
-        flexDirection: "column",
-        gap: "24px"
-      }}>
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "40px 20px" }}>
         {!result && !loading && (
-          <div style={{ margin: "auto", textAlign: "center", maxWidth: "500px" }}>
-            <div style={{ fontSize: "3rem", marginBottom: "20px" }}>🧠</div>
-            <h3 style={{ marginBottom: "12px" }}>Ask your library anything</h3>
-            <p className="muted mb-8">What would you like to discover today?</p>
-            
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          <div style={{ textAlign: "center", marginTop: "10vh" }}>
+            <h1 style={{ fontSize: "2.5rem", fontWeight: 800, marginBottom: "12px", letterSpacing: "-0.03em" }}>Knowledge Chat</h1>
+            <p style={{ color: "var(--text-secondary)", marginBottom: "40px" }}>Discover deep connections across your personal library.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", maxWidth: "600px", margin: "0 auto" }}>
               {SAMPLE_QUESTIONS.map((q, i) => (
-                <button
-                  key={i}
-                  className="card-hover"
+                <button 
+                  key={i} 
                   onClick={() => setQuestion(q)}
                   style={{ 
-                    padding: "16px", 
-                    borderRadius: "12px", 
-                    background: "var(--background-alt)",
-                    border: "1px solid var(--border)",
-                    textAlign: "left",
-                    fontSize: "0.85rem",
-                    cursor: "pointer",
-                    color: "var(--text)"
+                    padding: "16px", borderRadius: "12px", background: "var(--bg-subtle)", 
+                    border: "1px solid var(--border)", textAlign: "left", cursor: "pointer",
+                    fontSize: "0.85rem", color: "var(--text)"
                   }}
                 >
                   {q}
@@ -146,15 +120,11 @@ export default function ChatPage() {
           </div>
         )}
 
-        {(question && (loading || result)) && (
-          <div className="message user" style={{ alignSelf: "flex-end", maxWidth: "80%" }}>
+        {question && (loading || result) && (
+          <div style={{ marginBottom: "32px", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
             <div style={{ 
-              background: "var(--primary)", 
-              color: "white", 
-              padding: "12px 20px", 
-              borderRadius: "20px 20px 4px 20px",
-              fontSize: "1rem",
-              fontWeight: 500
+              background: "#1a1a1a", color: "#fff", padding: "12px 20px", 
+              borderRadius: "20px 20px 4px 20px", maxWidth: "80%", fontWeight: 500 
             }}>
               {question}
             </div>
@@ -162,155 +132,68 @@ export default function ChatPage() {
         )}
 
         {(loading || result) && (
-          <div className="message assistant" style={{ alignSelf: "flex-start", maxWidth: "90%", width: "100%" }}>
-            <div style={{ 
-              background: "var(--background-alt)", 
-              padding: "24px", 
-              borderRadius: "20px 20px 20px 4px",
-              border: "1px solid var(--border)",
-              boxShadow: "var(--shadow-sm)"
-            }}>
-              {loading && !result?.answer && (
-                <div style={{ display: "flex", gap: "4px" }}>
-                  <div className="dot-pulse"></div>
-                  <div className="dot-pulse" style={{ animationDelay: "0.2s" }}></div>
-                  <div className="dot-pulse" style={{ animationDelay: "0.4s" }}></div>
-                </div>
-              )}
-              
-              <div style={{ 
-                fontSize: "1.05rem", 
-                lineHeight: 1.6, 
-                color: "var(--text)",
-                whiteSpace: "pre-wrap"
-              }}>
-                {result?.answer}
-              </div>
-
-              {result && result.answer && !loading && (
-                <div style={{ 
-                  marginTop: "24px", 
-                  paddingTop: "16px", 
-                  borderTop: "1px solid var(--border)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "16px"
-                }}>
-                  {result.cypher_query && (
-                    <details>
-                      <summary style={{ cursor: "pointer", fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 700 }}>
-                        View Reasoning Query
-                      </summary>
-                      <div style={{ marginTop: "12px", background: "var(--bg)", padding: "12px", borderRadius: "8px" }}>
-                        <code style={{ fontSize: "0.8rem", color: "var(--primary-light)" }}>{result.cypher_query}</code>
-                      </div>
-                    </details>
-                  )}
-
-                  {result.evidence_nodes.length > 0 && (
-                    <div>
-                      <h4 style={{ fontSize: "0.75rem", color: "var(--muted)", textTransform: "uppercase", marginBottom: "8px" }}>Cited Evidence</h4>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                        {result.evidence_nodes.map(n => (
-                          <Link 
-                            key={n.id} 
-                            href={`/graph?node_id=${n.id}`} 
-                            className="chip" 
-                            style={{ fontSize: "0.75rem", textDecoration: "none" }}
-                          >
-                            {n.label}
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+          <div style={{ marginBottom: "40px" }}>
+            <div style={{ fontSize: "1.1rem", lineHeight: 1.7, color: "var(--text)", whiteSpace: "pre-wrap" }}>
+              {result?.answer || (loading && "Analyzing graph...")}
             </div>
+            
+            {result?.answer && !loading && (
+              <div style={{ marginTop: "32px", borderTop: "1px solid var(--border)", paddingTop: "20px" }}>
+                {result.cypher_query && (
+                  <details style={{ marginBottom: "16px" }}>
+                    <summary style={{ fontSize: "0.7rem", color: "var(--text-muted)", cursor: "pointer", fontWeight: 700, textTransform: "uppercase" }}>Reasoning</summary>
+                    <pre style={{ marginTop: "8px", background: "var(--bg-subtle)", padding: "12px", borderRadius: "8px", fontSize: "0.75rem", overflowX: "auto" }}>
+                      {result.cypher_query}
+                    </pre>
+                  </details>
+                )}
+                {result.evidence_nodes.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {result.evidence_nodes.map(n => (
+                      <Link key={n.id} href={`/graph?node_id=${n.id}`} className="tag">
+                        {n.label}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
         <div ref={scrollRef} />
       </div>
 
-      {/* Input Area */}
-      <div style={{ 
-        padding: "20px 0", 
-        background: "var(--background)",
-        position: "sticky",
-        bottom: 0
-      }}>
-        {error && (
-          <div className="error-panel mb-4" style={{ borderRadius: "12px" }}>
-            <p>{error}</p>
-          </div>
-        )}
-        <form onSubmit={onSubmit} style={{ position: "relative" }}>
+      {/* Input */}
+      <div style={{ padding: "20px", background: "var(--bg)", borderTop: "1px solid var(--border)" }}>
+        {error && <div className="alert alert-error mb-4">{error}</div>}
+        <form onSubmit={onSubmit} style={{ 
+          display: "flex", gap: "12px", background: "var(--bg-subtle)", 
+          padding: "8px", borderRadius: "16px", border: "1px solid var(--border-strong)"
+        }}>
           <textarea
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void onSubmit(e as any);
-              }
-            }}
-            placeholder="Ask your library..."
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSubmit(e as any); } }}
+            placeholder="Ask a question..."
             rows={1}
             style={{ 
-              width: "100%", 
-              padding: "16px 60px 16px 20px", 
-              borderRadius: "24px", 
-              background: "var(--surface)", 
-              border: "1px solid var(--border-strong)",
-              fontSize: "1rem",
-              resize: "none",
-              maxHeight: "200px",
-              boxShadow: "var(--shadow-lg)"
+              flex: 1, border: "none", background: "transparent", padding: "12px", 
+              fontSize: "1rem", outline: "none", resize: "none", minHeight: "44px"
             }}
           />
           <button 
             type="submit" 
             disabled={loading || !question.trim()}
             style={{ 
-              position: "absolute", 
-              right: "8px", 
-              bottom: "8px",
-              padding: "0 20px",
-              height: "40px",
-              borderRadius: "20px",
-              background: "var(--primary)",
-              color: "white",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "transform 0.2s",
-              fontSize: "0.9rem",
-              fontWeight: 600
+              padding: "0 24px", borderRadius: "12px", background: "#1a8917", 
+              color: "#fff", border: "none", fontWeight: 700, cursor: "pointer",
+              opacity: (loading || !question.trim()) ? 0.5 : 1
             }}
           >
-            {loading ? "⌛" : "Send"}
+            {loading ? "..." : "Send"}
           </button>
         </form>
-        <p className="text-sm muted" style={{ textAlign: "center", marginTop: "12px" }}>
-          AI may produce inaccurate information. Verify citations in the graph.
-        </p>
       </div>
-
-      <style jsx>{`
-        .dot-pulse {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background-color: var(--primary);
-          animation: pulse 1.2s infinite ease-in-out;
-        }
-        @keyframes pulse {
-          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 }
